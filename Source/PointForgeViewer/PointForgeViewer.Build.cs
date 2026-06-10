@@ -20,7 +20,8 @@ public class PointForgeViewer : ModuleRules
 	public PointForgeViewer(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-		CppStandard = CppStandardVersion.Cpp17;
+		// Inherit UE 5.5's default C++ standard (C++20). Do NOT force Cpp17 — the
+		// engine headers (SceneView.h, InstanceDataTypes.h) use C++20 features.
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{

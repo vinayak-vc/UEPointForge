@@ -94,7 +94,7 @@ void FPFPointCloudSceneProxy::GetDynamicMeshElements(
 	uint32 VisibilityMap,
 	FMeshElementCollector& Collector) const
 {
-	const FMatrix& LocalToWorld = GetLocalToWorld();
+	const FMatrix& LocalToWorldMatrix = GetLocalToWorld();
 
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 	{
@@ -106,7 +106,7 @@ void FPFPointCloudSceneProxy::GetDynamicMeshElements(
 		FPrimitiveDrawInterface* PDI = Collector.GetPDI(ViewIndex);
 		for (const FBox& Box : NodeBoxes)
 		{
-			DrawWireBox(PDI, LocalToWorld, Box, WireColor, SDPG_World, 1.0f);
+			DrawWireBox(PDI, LocalToWorldMatrix, Box, WireColor, SDPG_World, 1.0f);
 		}
 	}
 
