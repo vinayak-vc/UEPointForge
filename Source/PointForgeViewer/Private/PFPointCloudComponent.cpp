@@ -3,6 +3,7 @@
 #include "PFOctreeStore.h"
 #include "PFPointCloudSceneProxy.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "RenderingThread.h"
 
 UPFPointCloudComponent::UPFPointCloudComponent()
@@ -29,7 +30,24 @@ bool UPFPointCloudComponent::OpenOctreeDir(const FString& OctreeDir)
 	}
 
 	Store = MoveTemp(NewStore);
-	MarkRenderStateDirty(); // recreate the scene proxy
+
+	// Wrap PointMaterial in a dynamic instance so the panel can drive
+	// PointSize/Round/Attenuate live. (Points are invisible unless the assigned
+	// material does the billboard World Position Offset — see M_PFPoint.)
+	if (PointMaterial)
+	{
+		PointMID = Cast<UMaterialInstanceDynamic>(PointMaterial);
+		if (!PointMID)
+		{
+			PointMID = UMaterialInstanceDynamic::Create(PointMaterial, this);
+			if (PointMID)
+			{
+				PointMaterial = PointMID;
+			}
+		}
+	}
+
+	MarkRenderStateDirty(); // recreate the scene proxy (reads PointMaterial)
 	UpdateBounds();
 	return true;
 }
@@ -55,6 +73,14 @@ void UPFPointCloudComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 			{
 				Proxy->SetTunables_RenderThread(Sse, GpuBytes, Uploads);
 			});
+	}
+
+	// Drive the billboard material params (game-thread MID setters).
+	if (PointMID)
+	{
+		PointMID->SetScalarParameterValue(TEXT("PointSize"), PointSize);
+		PointMID->SetScalarParameterValue(TEXT("Round"), bRoundPoints ? 1.f : 0.f);
+		PointMID->SetScalarParameterValue(TEXT("Attenuate"), bAttenuate ? 1.f : 0.f);
 	}
 }
 
@@ -97,7 +123,11 @@ FPrimitiveSceneProxy* UPFPointCloudComponent::CreateSceneProxy()
 
 void UPFPointCloudComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials) const
 {
-	if (PointMaterial)
+	if (PointMID)
+	{
+		OutMaterials.Add(PointMID);
+	}
+	else if (PointMaterial)
 	{
 		OutMaterials.Add(PointMaterial);
 	}

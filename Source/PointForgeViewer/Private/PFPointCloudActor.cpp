@@ -3,6 +3,7 @@
 #include "PFPointCloudComponent.h"
 #include "PFConvert.h"
 #include "PFViewerPanel.h"
+#include "PFConvertPanel.h"
 #include "Blueprint/UserWidget.h"
 #include "Engine/World.h"
 
@@ -94,4 +95,60 @@ void APFPointCloudActor::HidePanel()
 	{
 		Panel->RemoveFromParent();
 	}
+}
+
+float APFPointCloudActor::GetCacheSizeMB(const FString& SourceFile) const
+{
+	return static_cast<float>(FPFConvert::GetCacheSizeBytes(SourceFile) / (1024.0 * 1024.0));
+}
+
+bool APFPointCloudActor::ClearCacheForFile(const FString& SourceFile)
+{
+	return FPFConvert::ClearCacheFor(SourceFile);
+}
+
+int32 APFPointCloudActor::ClearAllCachesForDir(const FString& SourceFile)
+{
+	return FPFConvert::ClearAllCachesUnderSource(SourceFile);
+}
+
+void APFPointCloudActor::HideConvertPanel()
+{
+	if (ConvertPanel)
+	{
+		ConvertPanel->RemoveFromParent();
+	}
+}
+
+void APFPointCloudActor::ShowConvertPanel()
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->IsGameWorld())
+	{
+		UE_LOG(LogPointForgeActor, Warning, TEXT("ShowConvertPanel: no game world (run in PIE/standalone)"));
+		return;
+	}
+
+	if (!ConvertPanel)
+	{
+		TSubclassOf<UUserWidget> Cls = ConvertPanelClass ? ConvertPanelClass : TSubclassOf<UUserWidget>(UPFConvertPanel::StaticClass());
+		ConvertPanel = Cast<UPFConvertPanel>(CreateWidget(World, Cls));
+	}
+	if (!ConvertPanel)
+	{
+		UE_LOG(LogPointForgeActor, Error, TEXT("ShowConvertPanel: ConvertPanelClass must derive from UPFConvertPanel"));
+		return;
+	}
+
+	ConvertPanel->SetTarget(this);
+	if (!ConvertPanel->IsInViewport())
+	{
+		ConvertPanel->AddToViewport(900);
+	}
+	// Centre the panel in the viewport. Alignment 0.5,0.5 puts the widget's centre
+	// on the position; position (0,0) at centre anchor = dead centre.
+	// ConvertPanel->SetAlignmentInViewport(FVector2D(0.5f, 0.5f));
+	// ConvertPanel->SetAnchorsInViewport(FAnchors(0.5f, 0.5f, 0.5f, 0.5f));
+	// ConvertPanel->SetPositionInViewport(FVector2D(0.f, 0.f), false);
+	// ConvertPanel->SetDesiredSizeInViewport(FVector2D(440.f, 560.f));
 }

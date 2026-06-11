@@ -182,11 +182,33 @@ int32 FPFOctreeStore::PendingRequests()
 uint32 FPFOctreeStore::Run()
 {
 	IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
-	TUniquePtr<IFileHandle> Handle(PF.OpenRead(*OctreeBinPath));
-	if (!Handle.IsValid())
+
+	// Prefer memory-mapping octree.bin — kernel pages in on demand, no per-read
+	// syscall. Falls back to a persistent IFileHandle when mmap isn't available.
+	TUniquePtr<IMappedFileHandle> Mapped(PF.OpenMapped(*OctreeBinPath));
+	TUniquePtr<IMappedFileRegion> Region;
+	if (Mapped.IsValid())
 	{
-		UE_LOG(LogPointForge, Error, TEXT("OctreeStore worker: cannot open %s"), *OctreeBinPath);
-		return 1;
+		Region.Reset(Mapped->MapRegion(0, Mapped->GetFileSize()));
+	}
+	const uint8* MappedBase = Region.IsValid() ? Region->GetMappedPtr() : nullptr;
+	const int64  MappedSize = Region.IsValid() ? Region->GetMappedSize() : 0;
+
+	TUniquePtr<IFileHandle> Handle;
+	if (!MappedBase)
+	{
+		Handle.Reset(PF.OpenRead(*OctreeBinPath));
+		if (!Handle.IsValid())
+		{
+			UE_LOG(LogPointForge, Error, TEXT("OctreeStore worker: cannot open %s"), *OctreeBinPath);
+			return 1;
+		}
+		UE_LOG(LogPointForge, Log, TEXT("OctreeStore worker: mmap unavailable, using seek+read"));
+	}
+	else
+	{
+		UE_LOG(LogPointForge, Log, TEXT("OctreeStore worker: mmap'd octree.bin (%.1f MB)"),
+			MappedSize / (1024.0 * 1024.0));
 	}
 
 	TArray<FPFPackedPoint> Pts;
@@ -216,11 +238,33 @@ uint32 FPFOctreeStore::Run()
 		if (N.ByteSize > 0 && N.PointCount > 0)
 		{
 			const int32 NumPts = static_cast<int32>(N.PointCount);
-			Pts.SetNumUninitialized(NumPts);
-			if (Handle->Seek(static_cast<int64>(N.ByteOffset)) &&
-				Handle->Read(reinterpret_cast<uint8*>(Pts.GetData()), static_cast<int64>(N.ByteSize)))
+			const int64 Off = static_cast<int64>(N.ByteOffset);
+			const int64 Sz  = static_cast<int64>(N.ByteSize);
+
+			bool bRead = false;
+			if (MappedBase && Off + Sz <= MappedSize)
 			{
-				Result.Verts.SetNumUninitialized(NumPts);
+				Pts.SetNumUninitialized(NumPts);
+				FMemory::Memcpy(Pts.GetData(), MappedBase + Off, static_cast<SIZE_T>(Sz));
+				bRead = true;
+			}
+			else if (Handle.IsValid() && Handle->Seek(Off))
+			{
+				Pts.SetNumUninitialized(NumPts);
+				bRead = Handle->Read(reinterpret_cast<uint8*>(Pts.GetData()), Sz);
+			}
+
+			if (bRead)
+			{
+				// Expand each point to a 4-corner quad + 6 indices. Corner sign goes
+				// in UV0; the material reads it for camera-facing billboard expansion.
+				static const FVector2f Corners[4] = {
+					FVector2f(-0.5f, -0.5f), FVector2f(0.5f, -0.5f),
+					FVector2f(0.5f, 0.5f), FVector2f(-0.5f, 0.5f)
+				};
+				Result.NumPoints = NumPts;
+				Result.Verts.SetNumUninitialized(NumPts * 4);
+				Result.Indices.SetNumUninitialized(NumPts * 6);
 				for (int32 i = 0; i < NumPts; ++i)
 				{
 					const FPFPackedPoint& P = Pts[i];
@@ -228,13 +272,26 @@ uint32 FPFOctreeStore::Run()
 						static_cast<float>((P.X * Meta.Scale[0] + Meta.Offset[0] - Centre.X) * UnitScale),
 						static_cast<float>((P.Y * Meta.Scale[1] + Meta.Offset[1] - Centre.Y) * UnitScale),
 						static_cast<float>((P.Z * Meta.Scale[2] + Meta.Offset[2] - Centre.Z) * UnitScale));
+					const FColor Col = ColorOf(P);
 
-					FDynamicMeshVertex& V = Result.Verts[i];
-					V = FDynamicMeshVertex();
-					V.Position = Local;
-					V.Color = ColorOf(P);
-					V.TextureCoordinate[0] = FVector2f::ZeroVector;
-					V.SetTangents(FVector3f(1, 0, 0), FVector3f(0, 1, 0), FVector3f(0, 0, 1));
+					const int32 v = i * 4;
+					for (int32 c = 0; c < 4; ++c)
+					{
+						FDynamicMeshVertex& V = Result.Verts[v + c];
+						V = FDynamicMeshVertex();
+						V.Position = Local;                 // all 4 share the point position
+						V.Color = Col;
+						V.TextureCoordinate[0] = Corners[c]; // corner sign for the material
+						V.SetTangents(FVector3f(1, 0, 0), FVector3f(0, 1, 0), FVector3f(0, 0, 1));
+					}
+
+					const int32 idx = i * 6;
+					Result.Indices[idx + 0] = v;
+					Result.Indices[idx + 1] = v + 1;
+					Result.Indices[idx + 2] = v + 2;
+					Result.Indices[idx + 3] = v;
+					Result.Indices[idx + 4] = v + 2;
+					Result.Indices[idx + 5] = v + 3;
 				}
 			}
 		}

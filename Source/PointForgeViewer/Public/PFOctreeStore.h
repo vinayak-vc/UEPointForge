@@ -18,11 +18,16 @@ struct FPFNodeCube
 	double Size = 0.0;
 };
 
-/** A finished async payload load: node index + render-ready vertices (local space). */
+/** A finished async payload load: node index + render-ready quad geometry.
+ *  Each point is expanded to 4 corner verts (corner sign in UV0) + 6 indices
+ *  (two triangles), billboarded/sized/rounded in the material. NumPoints is the
+ *  source point count (Verts.Num() == NumPoints*4, Indices.Num() == NumPoints*6). */
 struct FPFLoadResult
 {
 	int32 NodeIndex = INDEX_NONE;
+	int32 NumPoints = 0;
 	TArray<FDynamicMeshVertex> Verts;
+	TArray<uint32> Indices;
 };
 
 /**

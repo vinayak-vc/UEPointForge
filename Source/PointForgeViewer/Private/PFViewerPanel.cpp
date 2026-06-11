@@ -75,10 +75,10 @@ TSharedRef<SWidget> UPFViewerPanel::RebuildWidget()
 			VBox->AddChildToVerticalBox(Row);
 		};
 
-		AddSlider(TEXT("Point size"), 1.f, 16.f, 2.f, PointSizeSlider, PointSizeLabel);
-		AddSlider(TEXT("LOD budget (px)"), 0.3f, 8.f, 1.5f, SseSlider, SseLabel);
-		AddSlider(TEXT("GPU budget (MB)"), 128.f, 8192.f, 1024.f, GpuSlider, GpuLabel);
-		AddSlider(TEXT("Uploads/frame"), 1.f, 256.f, 32.f, UploadsSlider, UploadsLabel);
+			AddSlider(TEXT("Point size"), 1.f, 16.f, 2.4f, PointSizeSlider, PointSizeLabel);
+			AddSlider(TEXT("LOD budget (px)"), 0.3f, 8.f, 7.5f, SseSlider, SseLabel);
+			AddSlider(TEXT("GPU budget (MB)"), 128.f, 8192.f, 4096.f, GpuSlider, GpuLabel);
+			AddSlider(TEXT("Uploads/frame"), 1.f, 256.f, 128.f, UploadsSlider, UploadsLabel);
 
 		// AddDynamic is a macro that stringifies the function name, so it must be
 		// called with a LITERAL &UPFViewerPanel::Fn — not a function-pointer variable.
@@ -105,7 +105,7 @@ TSharedRef<SWidget> UPFViewerPanel::RebuildWidget()
 		};
 
 		AddCheck(TEXT("Round points"), true, RoundCheck);
-		AddCheck(TEXT("Attenuate"), false, AttenCheck);
+		AddCheck(TEXT("Attenuate"), true, AttenCheck);
 		RoundCheck->OnCheckStateChanged.AddDynamic(this, &UPFViewerPanel::OnRoundChanged);
 		AttenCheck->OnCheckStateChanged.AddDynamic(this, &UPFViewerPanel::OnAttenuateChanged);
 

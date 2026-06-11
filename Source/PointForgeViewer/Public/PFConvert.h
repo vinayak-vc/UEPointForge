@@ -20,6 +20,15 @@ public:
 	/** True if the cache dir already holds a converted octree (meta.bin present). */
 	static bool IsConverted(const FString& CacheDir);
 
+	/** Total bytes used by ALL cached converts under <sourceDir>/PointForgeCache. */
+	static int64 GetCacheSizeBytes(const FString& SourceFile);
+
+	/** Delete the cache dir for this source file (this convert only). Returns true on success. */
+	static bool ClearCacheFor(const FString& SourceFile);
+
+	/** Delete every cache directory under <sourceDir>/PointForgeCache. */
+	static int32 ClearAllCachesUnderSource(const FString& SourceFile);
+
 	/** Locate pfconvert.exe: Override -> plugin Binaries/ThirdParty -> PointForge build/Release. */
 	static FString LocatePfConvert(const FString& Override = FString());
 

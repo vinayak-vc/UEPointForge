@@ -7,6 +7,7 @@
 
 class FPFOctreeStore;
 class UMaterialInterface;
+class UMaterialInstanceDynamic;
 
 /**
  * Live streaming stats, written by the scene proxy (render thread) and read by
@@ -109,6 +110,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|Render")
 	bool bAttenuate = false;
+
+	/** Dynamic instance of PointMaterial; drives PointSize/Round/Attenuate live. */
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> PointMID;
 
 	/** Resident octree (game-thread owned; const hierarchy read by the proxy). */
 	TSharedPtr<FPFOctreeStore> Store;

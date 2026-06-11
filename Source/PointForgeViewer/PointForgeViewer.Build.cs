@@ -34,6 +34,7 @@ public class PointForgeViewer : ModuleRules
 			"UMG",       // viewer panel (UUserWidget + controls)
 			"Slate",
 			"SlateCore",
+			"DeveloperSettings", // UPFConvertSettings (persistent convert params)
 		});
 
 		// The on-disk format structs are mirrored in PFOctreeFormat.h (size-asserted),

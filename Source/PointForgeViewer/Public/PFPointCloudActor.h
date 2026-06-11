@@ -6,6 +6,7 @@
 
 class UPFPointCloudComponent;
 class UPFViewerPanel;
+class UPFConvertPanel;
 class UUserWidget;
 
 /**
@@ -47,10 +48,36 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "PointForge")
 	void HidePanel();
+	
+	UFUNCTION(BlueprintCallable, Category = "PointForge")
+	void HideConvertPanel();
+
+	/** Show the conversion settings panel (set params + path, then Convert). */
+	UFUNCTION(BlueprintCallable, Category = "PointForge")
+	void ShowConvertPanel();
+
+	/** Cache size (MB) of every PointForge cache under the source file's directory. */
+	UFUNCTION(BlueprintCallable, Category = "PointForge|Cache")
+	float GetCacheSizeMB(const FString& SourceFile) const;
+
+	/** Delete the cache for this source file (this convert only). */
+	UFUNCTION(BlueprintCallable, Category = "PointForge|Cache")
+	bool ClearCacheForFile(const FString& SourceFile);
+
+	/** Delete every PointForgeCache subdir under the source file's directory. */
+	UFUNCTION(BlueprintCallable, Category = "PointForge|Cache")
+	int32 ClearAllCachesForDir(const FString& SourceFile);
+
+	/** Convert-panel widget class (defaults to the built-in UPFConvertPanel). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge")
+	TSubclassOf<UUserWidget> ConvertPanelClass;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "PointForge")
 	TObjectPtr<UPFPointCloudComponent> PointCloud;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UPFViewerPanel> Panel;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UPFConvertPanel> ConvertPanel;
 };

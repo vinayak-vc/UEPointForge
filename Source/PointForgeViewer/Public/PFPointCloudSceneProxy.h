@@ -4,6 +4,7 @@
 #include "PrimitiveSceneProxy.h"
 #include "LocalVertexFactory.h"
 #include "StaticMeshResources.h"   // FStaticMeshVertexBuffers
+#include "DynamicMeshBuilder.h"    // FDynamicMeshIndexBuffer32
 #include "MaterialShared.h"        // FMaterialRelevance
 
 class UPFPointCloudComponent;
@@ -16,8 +17,9 @@ struct FPFLoadResult;
 struct FPFNodeRender
 {
 	FStaticMeshVertexBuffers Buffers;
+	FDynamicMeshIndexBuffer32 IndexBuffer;   // 6 indices/point (quad = 2 tris)
 	FLocalVertexFactory VertexFactory;
-	int32 NumPoints = 0;
+	int32 NumPoints = 0;                     // source point count (verts = *4, indices = *6)
 	SIZE_T Bytes = 0;
 	uint32 LastUsedFrame = 0;
 
@@ -33,13 +35,15 @@ struct FPFNodeRender
  * Per frame (in GetDynamicMeshElements, render thread): drains finished async
  * loads into per-node GPU buffers (capped by UploadsPerFrame), traverses the
  * octree top-down with frustum cull + screen-space-error LOD (descend while a
- * node's projected spacing exceeds the pixel budget), emits a PT_PointList batch
- * for each resident node, requests missing nodes, and LRU-evicts to the GPU byte
- * budget. Direct port of pfview's traversal/eviction loop.
+ * node's projected spacing exceeds the pixel budget), emits a PT_TriangleList
+ * batch (one camera-facing quad per point) for each resident node, requests
+ * missing nodes, and LRU-evicts to the GPU byte budget.
  *
  * Reads the Store's const hierarchy/cubes directly (immutable after load → safe
- * on the render thread). Tunables are pushed from the component via a render
- * command. Still 1px points — sized/round/attenuated points are milestone #2B.
+ * on the render thread). Tunables pushed from the component via a render command.
+ * Point size / round / attenuate are done in the assigned billboard MATERIAL
+ * (World Position Offset reads the per-vertex corner sign in UV0) — points are
+ * invisible unless that material is assigned.
  */
 class FPFPointCloudSceneProxy : public FPrimitiveSceneProxy
 {
@@ -64,7 +68,7 @@ public:
 private:
 	// Mutable streaming state (touched only on the render thread).
 	void ProcessFrame(FMeshElementCollector& Collector, uint32 FrameNumber) const;
-	void CreateNode(const FPFLoadResult& Load) const;
+	void CreateNode(FPFLoadResult& Load) const;
 	void EvictToBudget(uint32 FrameNumber) const;
 
 	TSharedPtr<FPFOctreeStore> Store;

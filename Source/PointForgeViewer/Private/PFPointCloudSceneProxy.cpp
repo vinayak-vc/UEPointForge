@@ -11,15 +11,16 @@
 #include "ConvexVolume.h"
 #include "PrimitiveUniformShaderParametersBuilder.h"
 
-// Approx GPU footprint per point across FStaticMeshVertexBuffers
-// (position 12 + tangents 8 + UV 4 + color 4).
-static constexpr int64 kBytesPerGpuPoint = 28;
+// GPU footprint per source point: 4 verts (FStaticMeshVertexBuffers ~28 B each:
+// position 12 + tangents 8 + UV 4 + color 4) + 6 index entries (4 B each).
+static constexpr int64 kBytesPerGpuPoint = 4 * 28 + 6 * 4; // = 136
 
 void FPFNodeRender::ReleaseResources()
 {
 	Buffers.PositionVertexBuffer.ReleaseResource();
 	Buffers.StaticMeshVertexBuffer.ReleaseResource();
 	Buffers.ColorVertexBuffer.ReleaseResource();
+	IndexBuffer.ReleaseResource();
 	VertexFactory.ReleaseResource();
 }
 
@@ -70,7 +71,7 @@ void FPFPointCloudSceneProxy::SetTunables_RenderThread(float InSseBudgetPx, int6
 	UploadsPerFrame = InUploadsPerFrame;
 }
 
-void FPFPointCloudSceneProxy::CreateNode(const FPFLoadResult& Load) const
+void FPFPointCloudSceneProxy::CreateNode(FPFLoadResult& Load) const
 {
 	const int32 Idx = Load.NodeIndex;
 	if (Resident.Contains(Idx))
@@ -79,23 +80,27 @@ void FPFPointCloudSceneProxy::CreateNode(const FPFLoadResult& Load) const
 	}
 
 	TUniquePtr<FPFNodeRender> Node = MakeUnique<FPFNodeRender>(GetScene().GetFeatureLevel());
-	Node->NumPoints = Load.Verts.Num();
+	Node->NumPoints = Load.NumPoints;   // source points (Verts == *4, Indices == *6)
 	Node->LastUsedFrame = LastFrameProcessed;
 
-	if (Node->NumPoints > 0)
+	if (Node->NumPoints > 0 && Load.Verts.Num() == Node->NumPoints * 4 && Load.Indices.Num() == Node->NumPoints * 6)
 	{
 		Node->Bytes = static_cast<int64>(Node->NumPoints) * kBytesPerGpuPoint;
-		// InitFromDynamicVertex fills the buffers + wires the vertex factory.
-		// const_cast: the API takes a non-const TArray& but does not retain it.
-		TArray<FDynamicMeshVertex>& Verts = const_cast<TArray<FDynamicMeshVertex>&>(Load.Verts);
-		Node->Buffers.InitFromDynamicVertex(&Node->VertexFactory, Verts, /*NumTexCoords*/ 1);
+		// InitFromDynamicVertex fills the vertex buffers + wires the vertex factory.
+		Node->Buffers.InitFromDynamicVertex(&Node->VertexFactory, Load.Verts, /*NumTexCoords*/ 1);
+		Node->IndexBuffer.Indices = MoveTemp(Load.Indices);
 		BeginInitResource(&Node->Buffers.PositionVertexBuffer);
 		BeginInitResource(&Node->Buffers.StaticMeshVertexBuffer);
 		BeginInitResource(&Node->Buffers.ColorVertexBuffer);
+		BeginInitResource(&Node->IndexBuffer);
 		BeginInitResource(&Node->VertexFactory);
 
 		ResidentBytesTotal += Node->Bytes;
 		PointsOnGpuTotal += Node->NumPoints;
+	}
+	else
+	{
+		Node->NumPoints = 0; // empty / malformed → keep resident as a no-draw entry
 	}
 
 	Resident.Add(Idx, MoveTemp(Node));
@@ -108,12 +113,30 @@ void FPFPointCloudSceneProxy::EvictToBudget(uint32 FrameNumber) const
 		return;
 	}
 
-	// Oldest-first; never evict nodes used this frame.
+	// Evict cheapest-to-lose first: combine staleness (frames since drawn) with
+	// node depth, so deep leaves go before coarse ancestors. Root is sticky.
+	const TArray<FPFNodeRecord>& Nodes = Store.IsValid() ? Store->GetNodes() : TArray<FPFNodeRecord>();
+	const int32 RootIdx = Store.IsValid() ? Store->GetRootIndex() : INDEX_NONE;
+
+	auto NodeLevel = [&](int32 Idx) -> uint8
+	{
+		return (Idx >= 0 && Idx < Nodes.Num()) ? Nodes[Idx].Level : 0;
+	};
+
 	TArray<int32> Keys;
 	Resident.GetKeys(Keys);
-	Keys.Sort([this](const int32& A, const int32& B)
+	Keys.Sort([this, &NodeLevel, FrameNumber](const int32& A, const int32& B)
 	{
-		return Resident[A]->LastUsedFrame < Resident[B]->LastUsedFrame;
+		const FPFNodeRender* RA = Resident[A].Get();
+		const FPFNodeRender* RB = Resident[B].Get();
+		const uint32 StaleA = FrameNumber - (RA ? RA->LastUsedFrame : 0);
+		const uint32 StaleB = FrameNumber - (RB ? RB->LastUsedFrame : 0);
+		const uint8 LA = NodeLevel(A);
+		const uint8 LB = NodeLevel(B);
+		// Composite key: staleness dominates; ties broken by deeper level = evict first.
+		const uint64 KA = (static_cast<uint64>(StaleA) << 8) | LA;
+		const uint64 KB = (static_cast<uint64>(StaleB) << 8) | LB;
+		return KA > KB;  // larger composite = evict sooner
 	});
 
 	for (int32 Key : Keys)
@@ -126,6 +149,10 @@ void FPFPointCloudSceneProxy::EvictToBudget(uint32 FrameNumber) const
 		if (!Node || Node->LastUsedFrame == FrameNumber)
 		{
 			continue;
+		}
+		if (Key == RootIdx)
+		{
+			continue;   // root is precious — keep resident
 		}
 		ResidentBytesTotal -= Node->Bytes;
 		PointsOnGpuTotal -= Node->NumPoints;
@@ -243,7 +270,8 @@ void FPFPointCloudSceneProxy::GetDynamicMeshElements(
 			if (const TUniquePtr<FPFNodeRender>* Found = Resident.Find(Idx))
 			{
 				FPFNodeRender* Node = Found->Get();
-				if (Node && Node->NumPoints > 0 && Node->VertexFactory.IsInitialized())
+				if (Node && Node->NumPoints > 0 && Node->VertexFactory.IsInitialized()
+					&& Node->IndexBuffer.IndexBufferRHI.IsValid())
 				{
 					Node->LastUsedFrame = FrameNumber;
 
@@ -252,7 +280,7 @@ void FPFPointCloudSceneProxy::GetDynamicMeshElements(
 					Mesh.MaterialRenderProxy = MaterialProxy;
 					Mesh.bWireframe = false;
 					Mesh.ReverseCulling = IsLocalToWorldDeterminantNegative();
-					Mesh.Type = PT_PointList;
+					Mesh.Type = PT_TriangleList;          // quad sprites (2 tris/point)
 					Mesh.DepthPriorityGroup = SDPG_World;
 					Mesh.bCanApplyViewModeOverrides = false;
 					Mesh.CastShadow = false;
@@ -264,11 +292,11 @@ void FPFPointCloudSceneProxy::GetDynamicMeshElements(
 
 					FMeshBatchElement& Element = Mesh.Elements[0];
 					Element.PrimitiveUniformBufferResource = &DUB.UniformBuffer;
-					Element.IndexBuffer = nullptr;
+					Element.IndexBuffer = &Node->IndexBuffer;
 					Element.FirstIndex = 0;
-					Element.NumPrimitives = Node->NumPoints;
+					Element.NumPrimitives = Node->NumPoints * 2;          // 2 triangles per point
 					Element.MinVertexIndex = 0;
-					Element.MaxVertexIndex = Node->NumPoints - 1;
+					Element.MaxVertexIndex = Node->NumPoints * 4 - 1;     // 4 verts per point
 					Collector.AddMesh(ViewIndex, Mesh);
 
 					++DrawnNodes;
