@@ -1,59 +1,53 @@
 #include "PFOctreeStore.h"
 
 #include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformProcess.h"
+#include "HAL/RunnableThread.h"
+#include "HAL/Event.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeLock.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPointForge, Log, All);
 
-bool FPFOctreeStore::Open(const FString& InOctreeDir)
+FPFOctreeStore::~FPFOctreeStore()
+{
+	StopWorker();
+}
+
+bool FPFOctreeStore::Open(const FString& InOctreeDir, double InUnitScale, bool bInColorIs16Bit)
 {
 	bValid = false;
 	Nodes.Reset();
-	OctreeDir = InOctreeDir;
+	Cubes.Reset();
+	UnitScale = InUnitScale;
+	bColorIs16Bit = bInColorIs16Bit;
 
-	const FString MetaPath = FPaths::Combine(OctreeDir, TEXT("meta.bin"));
-	const FString HierPath = FPaths::Combine(OctreeDir, TEXT("hierarchy.bin"));
-	OctreeBinPath = FPaths::Combine(OctreeDir, TEXT("octree.bin"));
+	const FString MetaPath = FPaths::Combine(InOctreeDir, TEXT("meta.bin"));
+	const FString HierPath = FPaths::Combine(InOctreeDir, TEXT("hierarchy.bin"));
+	OctreeBinPath = FPaths::Combine(InOctreeDir, TEXT("octree.bin"));
 
-	// --- meta.bin ---
 	TArray<uint8> MetaBytes;
-	if (!FFileHelper::LoadFileToArray(MetaBytes, *MetaPath))
+	if (!FFileHelper::LoadFileToArray(MetaBytes, *MetaPath) ||
+		MetaBytes.Num() < static_cast<int32>(sizeof(FPFFileMetadata)))
 	{
 		UE_LOG(LogPointForge, Error, TEXT("OctreeStore: cannot read %s"), *MetaPath);
-		return false;
-	}
-	if (MetaBytes.Num() < static_cast<int32>(sizeof(FPFFileMetadata)))
-	{
-		UE_LOG(LogPointForge, Error, TEXT("OctreeStore: meta.bin too small (%d bytes)"), MetaBytes.Num());
 		return false;
 	}
 	FMemory::Memcpy(&Meta, MetaBytes.GetData(), sizeof(FPFFileMetadata));
 	if (FMemory::Memcmp(Meta.Magic, "PFO1", 4) != 0)
 	{
-		UE_LOG(LogPointForge, Error, TEXT("OctreeStore: bad magic (expected PFO1)"));
+		UE_LOG(LogPointForge, Error, TEXT("OctreeStore: bad magic"));
 		return false;
-	}
-	if (Meta.BytesPerPoint != sizeof(FPFPackedPoint))
-	{
-		UE_LOG(LogPointForge, Warning, TEXT("OctreeStore: bytesPerPoint=%u, expected %d"),
-			Meta.BytesPerPoint, static_cast<int32>(sizeof(FPFPackedPoint)));
 	}
 
-	// --- hierarchy.bin ---
 	TArray<uint8> HierBytes;
-	if (!FFileHelper::LoadFileToArray(HierBytes, *HierPath))
-	{
-		UE_LOG(LogPointForge, Error, TEXT("OctreeStore: cannot read %s"), *HierPath);
-		return false;
-	}
 	const int32 Count = static_cast<int32>(Meta.NodeCount);
 	const int64 Need = static_cast<int64>(Count) * sizeof(FPFNodeRecord);
-	if (Count <= 0 || HierBytes.Num() < Need)
+	if (!FFileHelper::LoadFileToArray(HierBytes, *HierPath) || Count <= 0 || HierBytes.Num() < Need)
 	{
-		UE_LOG(LogPointForge, Error, TEXT("OctreeStore: hierarchy.bin has %d bytes, need %lld"),
-			HierBytes.Num(), Need);
+		UE_LOG(LogPointForge, Error, TEXT("OctreeStore: bad hierarchy.bin"));
 		return false;
 	}
 	Nodes.SetNumUninitialized(Count);
@@ -61,58 +55,218 @@ bool FPFOctreeStore::Open(const FString& InOctreeDir)
 
 	if (Meta.RootNodeIndex >= static_cast<uint32>(Count))
 	{
-		UE_LOG(LogPointForge, Error, TEXT("OctreeStore: rootNodeIndex %u out of range (%d nodes)"),
-			Meta.RootNodeIndex, Count);
+		UE_LOG(LogPointForge, Error, TEXT("OctreeStore: root index out of range"));
 		return false;
 	}
 
+	bHasColor = (Meta.HasColor != 0);
+	Centre = FVector(
+		Meta.CubeMin[0] + Meta.CubeSize * 0.5,
+		Meta.CubeMin[1] + Meta.CubeSize * 0.5,
+		Meta.CubeMin[2] + Meta.CubeSize * 0.5);
+
+	ComputeCubes();
+
 	bValid = true;
-	UE_LOG(LogPointForge, Log, TEXT("OctreeStore: opened %s (%llu points, %d nodes, cube %.3f)"),
-		*OctreeDir, Meta.PointCount, Count, Meta.CubeSize);
+
+	// Start the streaming worker.
+	bStop = false;
+	WakeEvent = FPlatformProcess::GetSynchEventFromPool(false);
+	Thread = FRunnableThread::Create(this, TEXT("PFOctreeStoreLoader"), 0, TPri_BelowNormal);
+
+	UE_LOG(LogPointForge, Log, TEXT("OctreeStore: opened (%llu pts, %d nodes, cube %.3f)"),
+		Meta.PointCount, Count, Meta.CubeSize);
 	return true;
 }
 
-bool FPFOctreeStore::ReadNodePoints(const FPFNodeRecord& Node, TArray<FPFPackedPoint>& Out) const
+void FPFOctreeStore::ComputeCubes()
 {
-	Out.Reset();
-	if (!bValid)
+	Cubes.SetNum(Nodes.Num());
+	const int32 Root = GetRootIndex();
+	Cubes[Root].Min[0] = Meta.CubeMin[0];
+	Cubes[Root].Min[1] = Meta.CubeMin[1];
+	Cubes[Root].Min[2] = Meta.CubeMin[2];
+	Cubes[Root].Size = Meta.CubeSize;
+
+	TArray<int32> Stack;
+	Stack.Push(Root);
+	while (Stack.Num() > 0)
+	{
+		const int32 I = Stack.Pop(EAllowShrinking::No);
+		const FPFNodeRecord& Rec = Nodes[I];
+		for (int32 O = 0; O < 8; ++O)
+		{
+			const uint32 C = Rec.Children[O];
+			if (C != PF_NO_CHILD && C < static_cast<uint32>(Nodes.Num()))
+			{
+				double ChildMin[3];
+				double ChildSize;
+				PFChildCube(Cubes[I].Min, Cubes[I].Size, O, ChildMin, ChildSize);
+				Cubes[C].Min[0] = ChildMin[0];
+				Cubes[C].Min[1] = ChildMin[1];
+				Cubes[C].Min[2] = ChildMin[2];
+				Cubes[C].Size = ChildSize;
+				Stack.Push(static_cast<int32>(C));
+			}
+		}
+	}
+}
+
+double FPFOctreeStore::GetNodeSpacing(uint8 Level) const
+{
+	return Meta.RootSpacing / static_cast<double>(1ull << Level);
+}
+
+FColor FPFOctreeStore::ColorOf(const FPFPackedPoint& P) const
+{
+	if (!bHasColor)
+	{
+		return FColor::White;
+	}
+	if (bColorIs16Bit)
+	{
+		return FColor(uint8(P.R >> 8), uint8(P.G >> 8), uint8(P.B >> 8), 255);
+	}
+	return FColor(uint8(P.R & 0xFF), uint8(P.G & 0xFF), uint8(P.B & 0xFF), 255);
+}
+
+void FPFOctreeStore::RequestLoad(int32 NodeIndex)
+{
+	if (!bValid || NodeIndex < 0 || NodeIndex >= Nodes.Num())
+	{
+		return;
+	}
+	{
+		FScopeLock Lock(&InFlightCS);
+		if (InFlight.Contains(NodeIndex))
+		{
+			return;
+		}
+		InFlight.Add(NodeIndex);
+	}
+	PendingCount.Increment();
+	RequestQueue.Enqueue(NodeIndex);
+	if (WakeEvent)
+	{
+		WakeEvent->Trigger();
+	}
+}
+
+bool FPFOctreeStore::PopResult(FPFLoadResult& Out)
+{
+	if (!ResultQueue.Dequeue(Out))
 	{
 		return false;
 	}
-	if (Node.ByteSize == 0 || Node.PointCount == 0)
+	// Keep it in InFlight until it is uploaded+resident; the proxy calls
+	// MarkEvicted when it later drops the node. (Re-request is gated by residency
+	// on the proxy side, so we clear InFlight here to allow future reloads.)
 	{
-		return true; // empty node is a valid result
+		FScopeLock Lock(&InFlightCS);
+		InFlight.Remove(Out.NodeIndex);
 	}
+	return true;
+}
 
-	// NOTE: opens octree.bin per call for clarity. For the streaming renderer,
-	// keep one persistent IFileHandle (or memory-map) and issue async reads.
+void FPFOctreeStore::MarkEvicted(int32 NodeIndex)
+{
+	FScopeLock Lock(&InFlightCS);
+	InFlight.Remove(NodeIndex);
+}
+
+int32 FPFOctreeStore::PendingRequests()
+{
+	return PendingCount.GetValue();
+}
+
+uint32 FPFOctreeStore::Run()
+{
 	IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
 	TUniquePtr<IFileHandle> Handle(PF.OpenRead(*OctreeBinPath));
 	if (!Handle.IsValid())
 	{
-		UE_LOG(LogPointForge, Error, TEXT("OctreeStore: cannot open %s"), *OctreeBinPath);
-		return false;
+		UE_LOG(LogPointForge, Error, TEXT("OctreeStore worker: cannot open %s"), *OctreeBinPath);
+		return 1;
 	}
 
-	const int32 NumPts = static_cast<int32>(Node.PointCount);
-	Out.SetNumUninitialized(NumPts);
+	TArray<FPFPackedPoint> Pts;
 
-	if (!Handle->Seek(static_cast<int64>(Node.ByteOffset)))
+	while (!bStop)
 	{
-		Out.Reset();
-		return false;
+		int32 Idx = INDEX_NONE;
+		if (!RequestQueue.Dequeue(Idx))
+		{
+			if (WakeEvent)
+			{
+				WakeEvent->Wait();
+			}
+			continue;
+		}
+
+		if (Idx < 0 || Idx >= Nodes.Num())
+		{
+			PendingCount.Decrement();
+			continue;
+		}
+
+		const FPFNodeRecord& N = Nodes[Idx];
+		FPFLoadResult Result;
+		Result.NodeIndex = Idx;
+
+		if (N.ByteSize > 0 && N.PointCount > 0)
+		{
+			const int32 NumPts = static_cast<int32>(N.PointCount);
+			Pts.SetNumUninitialized(NumPts);
+			if (Handle->Seek(static_cast<int64>(N.ByteOffset)) &&
+				Handle->Read(reinterpret_cast<uint8*>(Pts.GetData()), static_cast<int64>(N.ByteSize)))
+			{
+				Result.Verts.SetNumUninitialized(NumPts);
+				for (int32 i = 0; i < NumPts; ++i)
+				{
+					const FPFPackedPoint& P = Pts[i];
+					const FVector3f Local(
+						static_cast<float>((P.X * Meta.Scale[0] + Meta.Offset[0] - Centre.X) * UnitScale),
+						static_cast<float>((P.Y * Meta.Scale[1] + Meta.Offset[1] - Centre.Y) * UnitScale),
+						static_cast<float>((P.Z * Meta.Scale[2] + Meta.Offset[2] - Centre.Z) * UnitScale));
+
+					FDynamicMeshVertex& V = Result.Verts[i];
+					V = FDynamicMeshVertex();
+					V.Position = Local;
+					V.Color = ColorOf(P);
+					V.TextureCoordinate[0] = FVector2f::ZeroVector;
+					V.SetTangents(FVector3f(1, 0, 0), FVector3f(0, 1, 0), FVector3f(0, 0, 1));
+				}
+			}
+		}
+
+		ResultQueue.Enqueue(MoveTemp(Result));
+		PendingCount.Decrement();
 	}
-	if (!Handle->Read(reinterpret_cast<uint8*>(Out.GetData()), static_cast<int64>(Node.ByteSize)))
-	{
-		Out.Reset();
-		return false;
-	}
-	return true;
+
+	return 0;
 }
 
-FBox FPFOctreeStore::GetSourceCubeBounds() const
+void FPFOctreeStore::Stop()
 {
-	const FVector Min(Meta.CubeMin[0], Meta.CubeMin[1], Meta.CubeMin[2]);
-	const FVector Max = Min + FVector(Meta.CubeSize, Meta.CubeSize, Meta.CubeSize);
-	return FBox(Min, Max);
+	bStop = true;
+	if (WakeEvent)
+	{
+		WakeEvent->Trigger();
+	}
+}
+
+void FPFOctreeStore::StopWorker()
+{
+	if (Thread)
+	{
+		Stop();
+		Thread->Kill(/*bShouldWait*/ true);
+		delete Thread;
+		Thread = nullptr;
+	}
+	if (WakeEvent)
+	{
+		FPlatformProcess::ReturnSynchEventToPool(WakeEvent);
+		WakeEvent = nullptr;
+	}
 }

@@ -24,11 +24,15 @@ LoadPointCloudFile("D:/scans/site.laz")
 | `…/PFPointCloudActor.{h,cpp}` | Blueprint-callable `LoadPointCloudFile` |
 
 ## Status
-- **Working now:** opens a converted octree, builds the scene proxy, draws coarse
-  node-cube wireframes (proves hierarchy parse + traversal + transform).
-- **Stub / next milestone:** actual point rendering — async payload streaming,
-  RHI vertex buffers, `PT_PointList` mesh batches, screen-space-error LOD, LRU
-  GPU budget. Hooks are in `FPFPointCloudSceneProxy` and `FPFOctreeStore`.
+- **Milestone #1 (done):** real point rendering. Proxy loads nodes breadth-first
+  (coarse→fine) up to `MaxResidentPoints` (default 8M), builds one
+  `FStaticMeshVertexBuffers` (position + colour) and draws as a single
+  `PT_PointList` batch (1px points — UE 5.5 has no point-size control on point
+  lists). Colour from per-point RGB; assign an unlit VertexColor→Emissive
+  material on the component (`PointMaterial`) to see it, else points are grey.
+- **Milestone #2 (next):** out-of-core SSE-LOD streaming + LRU GPU budget (load
+  only visible nodes, evict by GPU bytes), and fat/round points via a
+  quad-expanding custom vertex factory (port from the LidarPointCloud plugin).
 
 ## Setup
 1. Build PointForge so `pfconvert.exe` exists (`build/Release/pfconvert.exe`),

@@ -24,8 +24,11 @@ FString FPFConvert::GetCacheDirFor(const FString& SourceFile)
 	const FString Key = FString::Printf(TEXT("%s|%lld|%lld"),
 		*SourceFile, Size, Stamp.GetTicks());
 	const FString Hash = FMD5::HashAnsiString(*Key);
-
-	return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("PointForgeCache"), Hash);
+	
+	const FString FullSourceFile = FPaths::ConvertRelativePathToFull(SourceFile);
+	const FString SourceDir = FPaths::GetPath(SourceFile);
+	
+	return FPaths::Combine(FPaths::GetPath(SourceFile), TEXT("PointForgeCache"), Hash);
 }
 
 bool FPFConvert::IsConverted(const FString& CacheDir)

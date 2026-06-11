@@ -31,6 +31,9 @@ public class PointForgeViewer : ModuleRules
 			"RHI",
 			"RenderCore",
 			"Projects", // IPluginManager (locate bundled pfconvert.exe)
+			"UMG",       // viewer panel (UUserWidget + controls)
+			"Slate",
+			"SlateCore",
 		});
 
 		// The on-disk format structs are mirrored in PFOctreeFormat.h (size-asserted),

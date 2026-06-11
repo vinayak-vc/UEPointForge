@@ -2,41 +2,97 @@
 
 #include "CoreMinimal.h"
 #include "PFOctreeFormat.h"
+#include "DynamicMeshBuilder.h"      // FDynamicMeshVertex
+#include "HAL/Runnable.h"
+#include "HAL/ThreadSafeBool.h"
+#include "HAL/ThreadSafeCounter.h"
+#include "Containers/Queue.h"
+
+class FRunnableThread;
+class FEvent;
+
+/** Octree root cube (source/world units) per node, for LOD + frustum traversal. */
+struct FPFNodeCube
+{
+	double Min[3] = { 0, 0, 0 };
+	double Size = 0.0;
+};
+
+/** A finished async payload load: node index + render-ready vertices (local space). */
+struct FPFLoadResult
+{
+	int32 NodeIndex = INDEX_NONE;
+	TArray<FDynamicMeshVertex> Verts;
+};
 
 /**
- * Loads a converted PointForge octree directory (meta.bin + hierarchy.bin) and
- * reads per-node PackedPoint payloads from octree.bin on demand.
+ * Loads a converted PointForge octree (meta.bin + hierarchy.bin, resident) and
+ * streams node payloads off disk on a background thread — the read side of the
+ * out-of-core viewer. Port of pfview's OctreeStore.
  *
- * The hierarchy is tiny (52 bytes/node) and kept resident; point payloads are
- * streamed. This is the read side of the on-disk format invariant — keep the
- * mirrored structs in PFOctreeFormat.h in sync with the canonical headers.
+ * Threading: RequestLoad() enqueues (game/render thread); a worker reads
+ * octree.bin + builds FDynamicMeshVertex arrays; PopResult() drains finished
+ * loads (render thread). MarkEvicted() lets an evicted node be requested again.
  */
-class POINTFORGEVIEWER_API FPFOctreeStore
+class POINTFORGEVIEWER_API FPFOctreeStore : public FRunnable
 {
 public:
-	/** Opens an octree directory. Returns false on missing/invalid files. */
-	bool Open(const FString& InOctreeDir);
+	FPFOctreeStore() = default;
+	virtual ~FPFOctreeStore() override;
+
+	/** Opens an octree directory, precomputes cubes, starts the worker. */
+	bool Open(const FString& InOctreeDir, double InUnitScale, bool bInColorIs16Bit);
 
 	bool IsValid() const { return bValid; }
 
 	const FPFFileMetadata& GetMeta() const { return Meta; }
 	const TArray<FPFNodeRecord>& GetNodes() const { return Nodes; }
+	const FPFNodeCube& GetCube(int32 Index) const { return Cubes[Index]; }
 	int32 GetRootIndex() const { return static_cast<int32>(Meta.RootNodeIndex); }
 
-	/**
-	 * Reads a node's payload into Out (PackedPoint array). SYNCHRONOUS — call
-	 * from a worker thread for large nodes. Returns true on success (an empty
-	 * node returns true with Out emptied).
-	 */
-	bool ReadNodePoints(const FPFNodeRecord& Node, TArray<FPFPackedPoint>& Out) const;
+	/** Cube centre in source/world units (positions are rendered relative to it). */
+	FVector GetCubeCentre() const { return Centre; }
 
-	/** Octree root cube in SOURCE units (no UE transform applied). */
-	FBox GetSourceCubeBounds() const;
+	/** Node sample spacing in source units (rootSpacing / 2^level). */
+	double GetNodeSpacing(uint8 Level) const;
+
+	//~ Streaming -----------------------------------------------------------
+	/** Enqueue an async payload load (no-op if already queued/in-flight). */
+	void RequestLoad(int32 NodeIndex);
+	/** Drain one finished load; false if none ready. */
+	bool PopResult(FPFLoadResult& Out);
+	/** Mark a node no longer resident, so it can be requested again. */
+	void MarkEvicted(int32 NodeIndex);
+	int32 PendingRequests();
+
+	//~ FRunnable -----------------------------------------------------------
+	virtual uint32 Run() override;
+	virtual void Stop() override;
 
 private:
+	void ComputeCubes();
+	void StopWorker();
+	FColor ColorOf(const FPFPackedPoint& P) const;
+
 	bool bValid = false;
-	FString OctreeDir;
 	FString OctreeBinPath;
 	FPFFileMetadata Meta;
 	TArray<FPFNodeRecord> Nodes;
+	TArray<FPFNodeCube> Cubes;
+	FVector Centre = FVector::ZeroVector;
+	double UnitScale = 100.0;
+	bool bColorIs16Bit = true;
+	bool bHasColor = false;
+
+	// Worker / queues.
+	FRunnableThread* Thread = nullptr;
+	FEvent* WakeEvent = nullptr;
+	FThreadSafeBool bStop = false;
+
+	TQueue<int32, EQueueMode::Mpsc> RequestQueue;
+	TQueue<FPFLoadResult, EQueueMode::Mpsc> ResultQueue;
+
+	FCriticalSection InFlightCS;
+	TSet<int32> InFlight;          // queued or loading; guards dedupe + re-request
+	FThreadSafeCounter PendingCount;
 };
