@@ -88,6 +88,8 @@ private:
 	double UnitScale = 100.0;
 	bool bColorIs16Bit = true;
 	bool bHasColor = false;
+	bool bHasClassification = false;
+	uint32 CompressionType = 0;  // 0 = none, 1 = zstd
 
 	// Worker / queues.
 	FRunnableThread* Thread = nullptr;

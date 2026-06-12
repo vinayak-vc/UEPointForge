@@ -48,6 +48,10 @@ public:
 	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = "Advanced")
 	bool bVerbose = false;
 
+	/** Compress node payloads with zstd in octree.bin (reduces disk I/O, slight CPU cost). */
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = "Advanced")
+	bool bCompress = false;
+
 	/** Singleton (config-backed CDO). */
 	static UPFConvertSettings* Get();
 

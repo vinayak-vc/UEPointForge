@@ -19,6 +19,7 @@ void UPFConvertSettings::ResetToDefaults()
 	FlushBudget = 16 * 1024 * 1024;
 	bKeepChunks = false;
 	bVerbose = false;
+	bCompress = false;
 	SaveConfig();
 }
 
@@ -31,6 +32,7 @@ FString UPFConvertSettings::ToArgs() const
 	Args += FString::Printf(TEXT(" --max-depth %d"), MaxDepth);
 	Args += FString::Printf(TEXT(" --flush %lld"), FlushBudget);
 	if (bKeepChunks) { Args += TEXT(" --keep-chunks"); }
+	if (bCompress)   { Args += TEXT(" --compress"); }
 	if (bVerbose)    { Args += TEXT(" --verbose"); }
 	return Args;
 }
@@ -38,6 +40,6 @@ FString UPFConvertSettings::ToArgs() const
 FString UPFConvertSettings::KeyString() const
 {
 	// Only parameters that change the produced octree (keep-chunks/verbose excluded).
-	return FString::Printf(TEXT("cd%d_sp%.4f_lf%d_md%d_fl%lld"),
-		ChunkDepth, Spacing, LeafSize, MaxDepth, FlushBudget);
+	return FString::Printf(TEXT("cd%d_sp%.4f_lf%d_md%d_fl%lld_cmp%d"),
+		ChunkDepth, Spacing, LeafSize, MaxDepth, FlushBudget, bCompress ? 1 : 0);
 }

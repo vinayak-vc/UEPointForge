@@ -36,6 +36,28 @@ public class PointForgeViewer : ModuleRules
 			"SlateCore",
 			"DeveloperSettings", // UPFConvertSettings (persistent convert params)
 		});
+		
+		string VcpkgDir = Path.Combine(PointForgeRoot, "build", "vcpkg_installed", "x64-windows");
+		string ZstdInc = Path.Combine(VcpkgDir, "include");
+		string ZstdLib = Path.Combine(VcpkgDir, "lib", "zstd.lib");
+		
+		if (Directory.Exists(ZstdInc) && File.Exists(ZstdLib))
+		{
+			PrivateIncludePaths.Add(ZstdInc);
+			PublicAdditionalLibraries.Add(ZstdLib);
+			PublicDefinitions.Add("WITH_ZSTD=1");
+			
+			string ZstdDll = Path.Combine(VcpkgDir, "bin", "zstd.dll");
+			if (File.Exists(ZstdDll))
+			{
+				RuntimeDependencies.Add("$(BinaryOutputDir)/zstd.dll", ZstdDll);
+				PublicDelayLoadDLLs.Add("zstd.dll");
+			}
+		}
+		else
+		{
+			Console.WriteLine("PointForgeViewer: Zstd library not found at " + ZstdLib);
+		}
 
 		// The on-disk format structs are mirrored in PFOctreeFormat.h (size-asserted),
 		// so the viewer does NOT need pfcore headers for streaming. The include path

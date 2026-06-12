@@ -9,6 +9,20 @@ class FPFOctreeStore;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
 
+/** How the billboard material drives the points' visible colour. */
+UENUM(BlueprintType)
+enum class EPFColorMode : uint8
+{
+	/** Use the cloud's per-point RGB (default). */
+	RGB             UMETA(DisplayName = "RGB"),
+	/** Greyscale ramp from per-point intensity (LAS Intensity field). */
+	Intensity       UMETA(DisplayName = "Intensity"),
+	/** Colormap by world-Z (blue=low → red=high). Range from the cloud's bbox. */
+	Elevation       UMETA(DisplayName = "Elevation"),
+	/** ASPRS LAS classification palette (ground/building/vegetation/water/etc.). */
+	Classification  UMETA(DisplayName = "Classification")
+};
+
 /**
  * Live streaming stats, written by the scene proxy (render thread) and read by
  * the component (game thread) for the viewer panel. Display-only — relaxed
@@ -110,6 +124,34 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|Render")
 	bool bAttenuate = false;
+
+	/** Soft round edge falloff (0 = hard mask, >0 = anti-aliased disc). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|Render",
+		meta = (ClampMin = "0.0", ClampMax = "0.5"))
+	float SoftRoundFalloff = 0.f;
+
+	/** Drives the material's colour selection (RGB / Intensity / Elevation). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|Color")
+	EPFColorMode ColorMode = EPFColorMode::RGB;
+
+	/** Override the cloud's bbox Z range for Elevation mode (used if Max > Min, else auto). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|Color")
+	float ElevationMinZ = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|Color")
+	float ElevationMaxZ = 0.f;
+
+	/** Enable a slicing plane (everything on the positive side of Normal is hidden). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|Clip")
+	bool bUseClippingPlane = false;
+
+	/** Clipping plane origin (world units). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|Clip")
+	FVector ClippingPlaneOrigin = FVector::ZeroVector;
+
+	/** Clipping plane normal — positive side is hidden. Will be normalised. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|Clip")
+	FVector ClippingPlaneNormal = FVector(0, 0, 1);
 
 	/** Dynamic instance of PointMaterial; drives PointSize/Round/Attenuate live. */
 	UPROPERTY(Transient)

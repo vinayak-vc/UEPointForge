@@ -81,6 +81,30 @@ void UPFPointCloudComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 		PointMID->SetScalarParameterValue(TEXT("PointSize"), PointSize);
 		PointMID->SetScalarParameterValue(TEXT("Round"), bRoundPoints ? 1.f : 0.f);
 		PointMID->SetScalarParameterValue(TEXT("Attenuate"), bAttenuate ? 1.f : 0.f);
+		PointMID->SetScalarParameterValue(TEXT("SoftRound"), SoftRoundFalloff);
+		PointMID->SetScalarParameterValue(TEXT("ColorMode"), static_cast<float>(ColorMode));
+
+		// Elevation range: use overrides if Max>Min, else fall back to cloud's bbox Z.
+		float ElevMin = ElevationMinZ;
+		float ElevMax = ElevationMaxZ;
+		if (!(ElevMax > ElevMin) && Store.IsValid() && Store->IsValid())
+		{
+			const FPFFileMetadata& M = Store->GetMeta();
+			// world Z (source units) -> UE world after UnitScale (component world transform is applied separately)
+			ElevMin = static_cast<float>(M.BbMin[2] * UnitScale);
+			ElevMax = static_cast<float>(M.BbMax[2] * UnitScale);
+		}
+		PointMID->SetScalarParameterValue(TEXT("ElevationMinZ"), ElevMin);
+		PointMID->SetScalarParameterValue(TEXT("ElevationMaxZ"), ElevMax);
+
+		// Clipping plane
+		PointMID->SetScalarParameterValue(TEXT("ClipEnable"), bUseClippingPlane ? 1.f : 0.f);
+		PointMID->SetVectorParameterValue(TEXT("ClipOrigin"),
+			FLinearColor(ClippingPlaneOrigin.X, ClippingPlaneOrigin.Y, ClippingPlaneOrigin.Z, 0.f));
+		const FVector N = ClippingPlaneNormal.IsNearlyZero()
+			? FVector(0, 0, 1) : ClippingPlaneNormal.GetSafeNormal();
+		PointMID->SetVectorParameterValue(TEXT("ClipNormal"),
+			FLinearColor(N.X, N.Y, N.Z, 0.f));
 	}
 }
 

@@ -21,7 +21,7 @@
 struct FPFFileMetadata
 {
 	char   Magic[4];        // "PFO1"
-	uint32 Version;         // = 1
+	uint32 Version;         // = 1 or 2
 	uint64 PointCount;      // total points across all nodes
 	double BbMin[3];        // true AABB of the data (world coords)
 	double BbMax[3];
@@ -30,10 +30,12 @@ struct FPFFileMetadata
 	double Scale[3];        // quantization scale (PackedPoint -> world)
 	double Offset[3];       // quantization offset
 	double RootSpacing;     // sample spacing at the root node
-	uint32 BytesPerPoint;   // == sizeof(FPFPackedPoint) == 20
+	uint32 BytesPerPoint;   // == sizeof(FPFPackedPoint) (20 for v1, 22 for v2)
 	uint32 HasColor;        // 1 if colour is meaningful
 	uint32 NodeCount;       // number of FPFNodeRecord entries in hierarchy.bin
 	uint32 RootNodeIndex;   // index of the root node within hierarchy.bin
+	uint32 HasClassification; // 1 if classification codes are meaningful (v2+; 0 for v1)
+	uint32 CompressionType;   // 0 = none, 1 = zstd per-node (v2+; 0 for v1)
 };
 
 // hierarchy.bin — array of NodeCount records, root at RootNodeIndex.
@@ -44,16 +46,20 @@ struct FPFNodeRecord
 	uint16 Reserved;
 	uint32 PointCount;      // points stored in THIS node
 	uint64 ByteOffset;      // payload offset within octree.bin
-	uint32 ByteSize;        // payload size in bytes (PointCount * BytesPerPoint)
+	uint32 ByteSize;        // payload size in bytes (may be < PointCount*BytesPerPoint when compressed)
 	uint32 Children[8];     // global node index per octant, or PF_NO_CHILD
 };
 
 // octree.bin — concatenated, tightly packed per-node payloads.
+// v1: 20 bytes per point (no classification).
+// v2: 22 bytes per point (with classification + padding).
 struct FPFPackedPoint
 {
 	int32  X, Y, Z;         // quantized position = round((world - Offset) / Scale)
 	uint16 R, G, B;
 	uint16 Intensity;
+	uint8  Classification;  // ASPRS LAS class code (0–255); 0 for v1 data
+	uint8  Pad;             // alignment padding
 };
 
 #pragma pack(pop)
@@ -61,7 +67,7 @@ struct FPFPackedPoint
 static constexpr uint32 PF_NO_CHILD = 0xFFFFFFFFu;
 
 static_assert(sizeof(FPFNodeRecord) == 52, "FPFNodeRecord must match NodeRecord (52 bytes)");
-static_assert(sizeof(FPFPackedPoint) == 20, "FPFPackedPoint must match PackedPoint (20 bytes)");
+static_assert(sizeof(FPFPackedPoint) == 22, "FPFPackedPoint must match PackedPoint v2 (22 bytes)");
 
 // Subdivide a cube into the cube of octant O. Numbering: (x<<2)|(y<<1)|z,
 // 0 = low half. SINGLE SOURCE OF TRUTH is childCube() in OctreeFormat.h — this

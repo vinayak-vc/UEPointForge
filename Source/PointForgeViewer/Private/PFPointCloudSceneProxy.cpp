@@ -87,7 +87,7 @@ void FPFPointCloudSceneProxy::CreateNode(FPFLoadResult& Load) const
 	{
 		Node->Bytes = static_cast<int64>(Node->NumPoints) * kBytesPerGpuPoint;
 		// InitFromDynamicVertex fills the vertex buffers + wires the vertex factory.
-		Node->Buffers.InitFromDynamicVertex(&Node->VertexFactory, Load.Verts, /*NumTexCoords*/ 1);
+		Node->Buffers.InitFromDynamicVertex(&Node->VertexFactory, Load.Verts, /*NumTexCoords*/ 2);
 		Node->IndexBuffer.Indices = MoveTemp(Load.Indices);
 		BeginInitResource(&Node->Buffers.PositionVertexBuffer);
 		BeginInitResource(&Node->Buffers.StaticMeshVertexBuffer);
