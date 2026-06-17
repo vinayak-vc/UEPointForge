@@ -40,6 +40,7 @@ protected:
 	UFUNCTION() void OnSseChanged(float Value);
 	UFUNCTION() void OnGpuBudgetChanged(float Value);
 	UFUNCTION() void OnUploadsChanged(float Value);
+	UFUNCTION() void OnPointCountLimitChanged(float Value);
 	UFUNCTION() void OnRoundChanged(bool bChecked);
 	UFUNCTION() void OnAttenuateChanged(bool bChecked);
 
@@ -65,10 +66,12 @@ protected:
 	UPROPERTY(Transient) TObjectPtr<USlider> SseSlider;
 	UPROPERTY(Transient) TObjectPtr<USlider> GpuSlider;
 	UPROPERTY(Transient) TObjectPtr<USlider> UploadsSlider;
+	UPROPERTY(Transient) TObjectPtr<USlider> PointCountLimitSlider;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> PointSizeLabel;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> SseLabel;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> GpuLabel;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock> UploadsLabel;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock> PointCountLimitLabel;
 	UPROPERTY(Transient) TObjectPtr<UCheckBox> RoundCheck;
 	UPROPERTY(Transient) TObjectPtr<UCheckBox> AttenCheck;
 

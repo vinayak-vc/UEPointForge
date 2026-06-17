@@ -63,7 +63,7 @@ public:
 	virtual uint32 GetMemoryFootprint() const override { return sizeof(*this); }
 
 	/** Push live panel tunables (called via ENQUEUE_RENDER_COMMAND from the component). */
-	void SetTunables_RenderThread(float InSseBudgetPx, int64 InGpuBudgetBytes, int32 InUploadsPerFrame);
+	void SetTunables_RenderThread(float InSseBudgetPx, int64 InGpuBudgetBytes, int32 InUploadsPerFrame, float InPointCountLimit);
 
 private:
 	// Mutable streaming state (touched only on the render thread).
@@ -88,4 +88,5 @@ private:
 	mutable float SseBudgetPx = 1.5f;
 	mutable int64 GpuBudgetBytes = 1024ll * 1024ll * 1024ll;
 	mutable int32 UploadsPerFrame = 32;
+	mutable float PointCountLimit = 0.0f;
 };

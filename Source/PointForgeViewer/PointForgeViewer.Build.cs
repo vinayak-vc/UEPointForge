@@ -110,5 +110,17 @@ public class PointForgeViewer : ModuleRules
 		{
 			PublicDefinitions.Add("PF_LINK_PFCORE=0");
 		}
+
+		// Package pfconvert.exe and its dependencies for standalone builds
+		string ThirdPartyDir = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "Binaries", "ThirdParty"));
+		string[] ThirdPartyFiles = { "pfconvert.exe", "laszip3.dll", "E57Format.dll", "xerces-c_3_3.dll", "zstd.dll" };
+		foreach (string FileName in ThirdPartyFiles)
+		{
+			string FilePath = Path.Combine(ThirdPartyDir, FileName);
+			if (File.Exists(FilePath))
+			{
+				RuntimeDependencies.Add(FilePath);
+			}
+		}
 	}
 }

@@ -88,6 +88,7 @@ TSharedRef<SWidget> UPFViewerPanel::RebuildWidget()
 			AddSlider(TEXT("LOD budget (px)"), 0.3f, 8.f, 7.5f, SseSlider, SseLabel);
 			AddSlider(TEXT("GPU budget (MB)"), 128.f, 8192.f, 4096.f, GpuSlider, GpuLabel);
 			AddSlider(TEXT("Uploads/frame"), 1.f, 256.f, 128.f, UploadsSlider, UploadsLabel);
+			AddSlider(TEXT("Point Limit (M)"), 0.0f, 500.f, 0.0f, PointCountLimitSlider, PointCountLimitLabel);
 
 		// AddDynamic is a macro that stringifies the function name, so it must be
 		// called with a LITERAL &UPFViewerPanel::Fn — not a function-pointer variable.
@@ -95,6 +96,7 @@ TSharedRef<SWidget> UPFViewerPanel::RebuildWidget()
 		SseSlider->OnValueChanged.AddDynamic(this, &UPFViewerPanel::OnSseChanged);
 		GpuSlider->OnValueChanged.AddDynamic(this, &UPFViewerPanel::OnGpuBudgetChanged);
 		UploadsSlider->OnValueChanged.AddDynamic(this, &UPFViewerPanel::OnUploadsChanged);
+		PointCountLimitSlider->OnValueChanged.AddDynamic(this, &UPFViewerPanel::OnPointCountLimitChanged);
 
 		auto AddCheck = [&](const FString& Name, bool bVal, TObjectPtr<UCheckBox>& OutCheck)
 		{
@@ -216,6 +218,14 @@ void UPFViewerPanel::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 	{
 		UploadsLabel->SetText(FText::FromString(FString::Printf(TEXT("Uploads/frame: %d"), FMath::RoundToInt(UploadsSlider->GetValue()))));
 	}
+	if (PointCountLimitLabel && PointCountLimitSlider)
+	{
+		float Val = PointCountLimitSlider->GetValue();
+		if (Val > 0.0f)
+			PointCountLimitLabel->SetText(FText::FromString(FString::Printf(TEXT("Point Limit: %.1f M"), Val)));
+		else
+			PointCountLimitLabel->SetText(FText::FromString(TEXT("Point Limit: off")));
+	}
 	if (SoftRoundLabel && SoftRoundSlider)
 	{
 		SoftRoundLabel->SetText(FText::FromString(FString::Printf(TEXT("Soft round: %.2f"), SoftRoundSlider->GetValue())));
@@ -285,6 +295,11 @@ void UPFViewerPanel::OnGpuBudgetChanged(float Value)
 void UPFViewerPanel::OnUploadsChanged(float Value)
 {
 	if (Target.IsValid()) { Target->UploadsPerFrame = FMath::RoundToInt(Value); }
+}
+
+void UPFViewerPanel::OnPointCountLimitChanged(float Value)
+{
+	if (Target.IsValid()) { Target->PointCountLimit = Value; }
 }
 
 void UPFViewerPanel::OnRoundChanged(bool bChecked)

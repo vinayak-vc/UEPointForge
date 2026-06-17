@@ -43,6 +43,7 @@ FPFPointCloudSceneProxy::FPFPointCloudSceneProxy(const UPFPointCloudComponent* I
 	SseBudgetPx = InComponent ? InComponent->SseBudgetPixels : 1.5f;
 	GpuBudgetBytes = InComponent ? static_cast<int64>(InComponent->GpuBudgetMB) * 1024 * 1024 : (1024ll << 20);
 	UploadsPerFrame = InComponent ? InComponent->UploadsPerFrame : 32;
+	PointCountLimit = InComponent ? InComponent->PointCountLimit : 0.0f;
 
 	Material = InComponent ? InComponent->PointMaterial : nullptr;
 	if (!Material)
@@ -64,11 +65,12 @@ FPFPointCloudSceneProxy::~FPFPointCloudSceneProxy()
 	Resident.Empty();
 }
 
-void FPFPointCloudSceneProxy::SetTunables_RenderThread(float InSseBudgetPx, int64 InGpuBudgetBytes, int32 InUploadsPerFrame)
+void FPFPointCloudSceneProxy::SetTunables_RenderThread(float InSseBudgetPx, int64 InGpuBudgetBytes, int32 InUploadsPerFrame, float InPointCountLimit)
 {
 	SseBudgetPx = InSseBudgetPx;
 	GpuBudgetBytes = InGpuBudgetBytes;
 	UploadsPerFrame = InUploadsPerFrame;
+	PointCountLimit = InPointCountLimit;
 }
 
 void FPFPointCloudSceneProxy::CreateNode(FPFLoadResult& Load) const
@@ -306,6 +308,12 @@ void FPFPointCloudSceneProxy::GetDynamicMeshElements(
 			else if (Store.IsValid())
 			{
 				Store->RequestLoad(Idx);
+			}
+
+			// If we have hit the point count limit, stop traversing (thin the cloud).
+			if (PointCountLimit > 0.0f && DrawnPoints >= static_cast<int64>(PointCountLimit * 1000000.0f))
+			{
+				continue;
 			}
 
 			// Screen-space error: descend while projected spacing exceeds the budget.

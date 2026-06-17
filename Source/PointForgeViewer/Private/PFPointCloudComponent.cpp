@@ -68,10 +68,11 @@ void UPFPointCloudComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 		const float Sse = SseBudgetPixels;
 		const int64 GpuBytes = static_cast<int64>(GpuBudgetMB) * 1024 * 1024;
 		const int32 Uploads = UploadsPerFrame;
+		const float Limit = PointCountLimit;
 		ENQUEUE_RENDER_COMMAND(PFSetTunables)(
-			[Proxy, Sse, GpuBytes, Uploads](FRHICommandListImmediate&)
+			[Proxy, Sse, GpuBytes, Uploads, Limit](FRHICommandListImmediate&)
 			{
-				Proxy->SetTunables_RenderThread(Sse, GpuBytes, Uploads);
+				Proxy->SetTunables_RenderThread(Sse, GpuBytes, Uploads, Limit);
 			});
 	}
 

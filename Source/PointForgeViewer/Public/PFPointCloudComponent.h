@@ -118,6 +118,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|LOD", meta = (ClampMin = "1", ClampMax = "256"))
 	int32 UploadsPerFrame = 32;
 
+	/** Point count limit in millions (0 = unlimited). Thins the cloud by halting traversal once reached. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|LOD", meta = (ClampMin = "0", ClampMax = "500"))
+	float PointCountLimit = 0.0f;
+
 	/** Base point size in pixels (used once milestone #2B sized points land). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "PointForge|Render", meta = (ClampMin = "1.0", ClampMax = "16.0"))
 	float PointSize = 2.0f;
