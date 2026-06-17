@@ -6,6 +6,8 @@
 #include "PFConvertPanel.h"
 #include "Blueprint/UserWidget.h"
 #include "Engine/World.h"
+#include "Components/PostProcessComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPointForgeActor, Log, All);
 
@@ -15,6 +17,56 @@ APFPointCloudActor::APFPointCloudActor()
 
 	PointCloud = CreateDefaultSubobject<UPFPointCloudComponent>(TEXT("PointCloud"));
 	RootComponent = PointCloud;
+
+	PostProcess = CreateDefaultSubobject<UPostProcessComponent>(TEXT("PostProcess"));
+	PostProcess->SetupAttachment(RootComponent);
+	PostProcess->bUnbound = true;   // affect full scene, not just a volume
+	PostProcess->bEnabled = false;  // enabled in BeginPlay once M_EDL is confirmed loaded
+}
+
+void APFPointCloudActor::BeginPlay()
+{
+	Super::BeginPlay();
+	if (bEnableEDL)
+	{
+		ApplyEDL();
+	}
+}
+
+void APFPointCloudActor::ApplyEDL()
+{
+	static const TCHAR* EDLAssetPath = TEXT("/Game/PointCloudData/matrial/M_EDL");
+	UMaterialInterface* EDLMat = Cast<UMaterialInterface>(
+		StaticLoadObject(UMaterialInterface::StaticClass(), nullptr, EDLAssetPath));
+	if (!EDLMat)
+	{
+		UE_LOG(LogPointForgeActor, Warning,
+			TEXT("PointForge EDL: M_EDL not found at %s — run Scripts/build_edl_material.py first"),
+			EDLAssetPath);
+		return;
+	}
+
+	EDLMid = UMaterialInstanceDynamic::Create(EDLMat, this);
+	EDLMid->SetScalarParameterValue(TEXT("EDLStrength"), EDLStrength);
+	EDLMid->SetScalarParameterValue(TEXT("EDLRadius"),   EDLRadius);
+
+	PostProcess->Settings.WeightedBlendables.Array.Empty();
+	PostProcess->Settings.WeightedBlendables.Array.Add(FWeightedBlendable(1.0f, EDLMid));
+	PostProcess->bEnabled = true;
+
+	UE_LOG(LogPointForgeActor, Log, TEXT("PointForge EDL enabled (strength=%.2f radius=%.1f)"),
+		EDLStrength, EDLRadius);
+}
+
+void APFPointCloudActor::SetEDLParams(float Strength, float Radius)
+{
+	EDLStrength = Strength;
+	EDLRadius   = Radius;
+	if (EDLMid)
+	{
+		EDLMid->SetScalarParameterValue(TEXT("EDLStrength"), Strength);
+		EDLMid->SetScalarParameterValue(TEXT("EDLRadius"),   Radius);
+	}
 }
 
 void APFPointCloudActor::LoadPointCloudFile(const FString& SourceFile)
@@ -55,7 +107,33 @@ void APFPointCloudActor::LoadPointCloudFile(const FString& SourceFile)
 	});
 
 	UE_LOG(LogPointForgeActor, Log, TEXT("LoadPointCloudFile: %s -> cache %s"), *SourceFile, *CacheDir);
-	FPFConvert::ConvertAsync(SourceFile, Exe, Done);
+	CurrentConvert = FPFConvert::ConvertAsync(SourceFile, Exe, Done);
+}
+
+EPFConvertState APFPointCloudActor::GetConvertState() const
+{
+	if (!CurrentConvert.IsValid()) { return EPFConvertState::Idle; }
+	return CurrentConvert->State.load();
+}
+
+FString APFPointCloudActor::GetConvertStatus() const
+{
+	if (!CurrentConvert.IsValid()) { return FString(); }
+	return CurrentConvert->GetStatus();
+}
+
+bool APFPointCloudActor::IsConverting() const
+{
+	return CurrentConvert.IsValid() && CurrentConvert->State.load() == EPFConvertState::Running;
+}
+
+void APFPointCloudActor::CancelConvert()
+{
+	if (CurrentConvert.IsValid() && CurrentConvert->State.load() == EPFConvertState::Running)
+	{
+		CurrentConvert->bCancelRequested.store(true);
+		UE_LOG(LogPointForgeActor, Log, TEXT("CancelConvert requested"));
+	}
 }
 
 void APFPointCloudActor::ShowPanel()
@@ -80,6 +158,7 @@ void APFPointCloudActor::ShowPanel()
 	}
 
 	Panel->SetTarget(PointCloud);
+	Panel->SetOwnerActor(this);
 	if (!Panel->IsInViewport())
 	{
 		Panel->AddToViewport(1000);

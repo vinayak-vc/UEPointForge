@@ -12,10 +12,9 @@ class UButton;
 class UTextBlock;
 
 /**
- * Conversion control panel (code-built UMG). Exposes all pfconvert parameters
- * (UPFConvertSettings) with an "Important" density section up top and Advanced
- * below. Edits auto-save; a Reset button restores pfconvert defaults; Convert
- * runs the target actor's LoadPointCloudFile with the entered path.
+ * Conversion control panel — built entirely in C++ (no WidgetBlueprint required).
+ * Exposes all pfconvert parameters via UPFConvertSettings; edits auto-save.
+ * Browse button opens a file-picker dialog (editor builds only).
  */
 UCLASS()
 class POINTFORGEVIEWER_API UPFConvertPanel : public UUserWidget
@@ -26,15 +25,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "PointForge")
 	void SetTarget(APFPointCloudActor* InTarget);
 
-	/** Pre-fill the source-file path box. */
 	UFUNCTION(BlueprintCallable, Category = "PointForge")
 	void SetSourcePath(const FString& InPath);
 
 protected:
+	virtual TSharedRef<SWidget> RebuildWidget() override;
 	virtual void NativeConstruct() override;
+	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
 	void RefreshFromSettings();
+	void RefreshConvertUi();
 
+	UFUNCTION() void OnBrowseClicked();
 	UFUNCTION() void OnSpacingChanged(float V);
 	UFUNCTION() void OnLeafChanged(float V);
 	UFUNCTION() void OnMaxDepthChanged(float V);
@@ -42,23 +44,34 @@ protected:
 	UFUNCTION() void OnFlushChanged(float V);
 	UFUNCTION() void OnKeepChunksChanged(bool b);
 	UFUNCTION() void OnVerboseChanged(bool b);
+	UFUNCTION() void OnCompressChanged(bool b);
 	UFUNCTION() void OnConvertClicked();
 	UFUNCTION() void OnResetClicked();
 	UFUNCTION() void OnSaveClicked();
+	UFUNCTION() void OnCancelClicked();
+	UFUNCTION() void OnClearThisClicked();
+	UFUNCTION() void OnClearAllClicked();
 
 	TWeakObjectPtr<APFPointCloudActor> Target;
 
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<UEditableTextBox> PathBox;
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<USpinBox> SpacingSpin;
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<USpinBox> LeafSpin;
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<USpinBox> MaxDepthSpin;
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<USpinBox> ChunkSpin;
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<USpinBox> FlushSpin;
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<UCheckBox> KeepChunksCheck;
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<UCheckBox> VerboseCheck;
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<UTextBlock> StatusText;
+	UPROPERTY(Transient) TObjectPtr<UEditableTextBox> PathBox;
+	UPROPERTY(Transient) TObjectPtr<UButton>          BrowseBtn;
+	UPROPERTY(Transient) TObjectPtr<USpinBox>         SpacingSpin;
+	UPROPERTY(Transient) TObjectPtr<USpinBox>         LeafSpin;
+	UPROPERTY(Transient) TObjectPtr<USpinBox>         MaxDepthSpin;
+	UPROPERTY(Transient) TObjectPtr<USpinBox>         ChunkSpin;
+	UPROPERTY(Transient) TObjectPtr<USpinBox>         FlushSpin;
+	UPROPERTY(Transient) TObjectPtr<UCheckBox>        KeepChunksCheck;
+	UPROPERTY(Transient) TObjectPtr<UCheckBox>        VerboseCheck;
+	UPROPERTY(Transient) TObjectPtr<UCheckBox>        CompressCheck;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock>       StatusText;
+	UPROPERTY(Transient) TObjectPtr<UButton>          ConvertBtn;
+	UPROPERTY(Transient) TObjectPtr<UButton>          CancelBtn;
+	UPROPERTY(Transient) TObjectPtr<UButton>          SaveBtn;
+	UPROPERTY(Transient) TObjectPtr<UButton>          ResetBtn;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock>       CacheSizeText;
+	UPROPERTY(Transient) TObjectPtr<UButton>          ClearThisBtn;
+	UPROPERTY(Transient) TObjectPtr<UButton>          ClearAllBtn;
 
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<UButton> ConvertBtn;
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<UButton> SaveBtn;
-	UPROPERTY(meta = (BindWidget)) TObjectPtr<UButton> ResetBtn;
+	float CacheLabelTimer = 0.f;
 };

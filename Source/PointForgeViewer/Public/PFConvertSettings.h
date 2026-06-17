@@ -52,6 +52,10 @@ public:
 	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = "Advanced")
 	bool bCompress = false;
 
+	/** Last source file path the user converted — pre-fills the path box on open. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = "Advanced")
+	FString LastSourceFile;
+
 	/** Singleton (config-backed CDO). */
 	static UPFConvertSettings* Get();
 

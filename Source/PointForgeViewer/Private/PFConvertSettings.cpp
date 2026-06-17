@@ -20,6 +20,7 @@ void UPFConvertSettings::ResetToDefaults()
 	bKeepChunks = false;
 	bVerbose = false;
 	bCompress = false;
+	LastSourceFile.Empty();
 	SaveConfig();
 }
 

@@ -115,15 +115,40 @@ FString FPFConvert::LocatePfConvert(const FString& Override)
 	return FPaths::FileExists(Fallback) ? Fallback : FString();
 }
 
-void FPFConvert::ConvertAsync(const FString& SourceFile, const FString& PfConvertExe, FPFConvertDone OnDone)
+// Parse a chunk of pfconvert stdout and refine the handle's status text. Looks
+// for phase markers (the indexer logs "Phase A/B/C", "chunking", "indexing",
+// "writing meta"). Cheap regex-free substring scan.
+static void ParseConvertStatus(const FString& Chunk, FPFConvertHandle& Handle)
 {
+	if (Chunk.IsEmpty()) { return; }
+	FString Status;
+	const FString L = Chunk.ToLower();
+	if (L.Contains(TEXT("phase a")) || L.Contains(TEXT("counting"))) { Status = TEXT("Counting points"); }
+	else if (L.Contains(TEXT("phase b")) || L.Contains(TEXT("chunk")))    { Status = TEXT("Chunking"); }
+	else if (L.Contains(TEXT("phase c")) || L.Contains(TEXT("index")))    { Status = TEXT("Building octree"); }
+	else if (L.Contains(TEXT("writing meta")) || L.Contains(TEXT("meta.bin"))) { Status = TEXT("Writing metadata"); }
+	else if (L.Contains(TEXT("error"))) { Status = TEXT("Error — check log"); }
+	if (!Status.IsEmpty())
+	{
+		Handle.SetStatus(Status);
+	}
+}
+
+FPFConvertHandlePtr FPFConvert::ConvertAsync(const FString& SourceFile, const FString& PfConvertExe, FPFConvertDone OnDone)
+{
+	FPFConvertHandlePtr Handle = MakeShared<FPFConvertHandle, ESPMode::ThreadSafe>();
 	const FString CacheDir = GetCacheDirFor(SourceFile);
 
 	if (IsConverted(CacheDir))
 	{
+		Handle->State.store(EPFConvertState::Done);
+		Handle->SetStatus(TEXT("Cache hit"));
 		AsyncTask(ENamedThreads::GameThread, [OnDone]() { OnDone.ExecuteIfBound(true); });
-		return;
+		return Handle;
 	}
+
+	Handle->State.store(EPFConvertState::Running);
+	Handle->SetStatus(TEXT("Starting..."));
 
 	// Snapshot convert params on the game thread (captured into the worker).
 	const UPFConvertSettings* S = UPFConvertSettings::Get();
@@ -135,16 +160,18 @@ void FPFConvert::ConvertAsync(const FString& SourceFile, const FString& PfConver
 	const uint64 OptFlush = static_cast<uint64>(S->FlushBudget);
 	const bool   OptKeepChunks = S->bKeepChunks;
 
-	Async(EAsyncExecution::Thread, [SourceFile, PfConvertExe, CacheDir, OnDone, SettingsArgs,
+	Async(EAsyncExecution::Thread, [SourceFile, PfConvertExe, CacheDir, OnDone, SettingsArgs, Handle,
 		OptChunkDepth, OptSpacing, OptLeaf, OptMaxDepth, OptFlush, OptKeepChunks]()
 	{
 		IFileManager::Get().MakeDirectory(*CacheDir, /*Tree*/ true);
 
 		bool bOk = false;
+		bool bCancelled = false;
 
 #if PF_LINK_PFCORE
 		{
-			// In-process convert via pfcore, using the panel's params.
+			// In-process convert via pfcore. Cancel isn't cooperative here — the
+			// call blocks until done. Cancel only works in the subprocess path.
 			pf::IndexOptions Opts;
 			Opts.gridDepth = OptChunkDepth;
 			Opts.rootSpacing = OptSpacing;
@@ -159,35 +186,98 @@ void FPFConvert::ConvertAsync(const FString& SourceFile, const FString& PfConver
 		{
 			UE_LOG(LogPointForgeConvert, Error,
 				TEXT("ConvertAsync: pfconvert.exe not found (set PfConvertExePath or bundle it in Binaries/ThirdParty)."));
+			Handle->SetStatus(TEXT("pfconvert.exe not found"));
 		}
 		else
 		{
 			const FString Args = FString::Printf(TEXT("\"%s\" --out \"%s\"%s"), *SourceFile, *CacheDir, *SettingsArgs);
 			UE_LOG(LogPointForgeConvert, Log, TEXT("ConvertAsync: %s %s"), *PfConvertExe, *Args);
 
+			// Read pipe captures pfconvert stdout so we can parse phase markers
+			// and (eventually) progress percentages.
+			void* PipeRead = nullptr;
+			void* PipeWrite = nullptr;
+			if (!FPlatformProcess::CreatePipe(PipeRead, PipeWrite))
+			{
+				PipeRead = nullptr; PipeWrite = nullptr;
+			}
+
 			int32 RetCode = -1;
 			FProcHandle Proc = FPlatformProcess::CreateProc(
 				*PfConvertExe, *Args,
 				/*bLaunchDetached*/ false, /*bLaunchHidden*/ true, /*bLaunchReallyHidden*/ true,
 				/*OutProcessID*/ nullptr, /*PriorityModifier*/ 0,
-				/*OptionalWorkingDirectory*/ nullptr, /*PipeWriteChild*/ nullptr);
+				/*OptionalWorkingDirectory*/ nullptr, /*PipeWriteChild*/ PipeWrite);
 
 			if (Proc.IsValid())
 			{
-				FPlatformProcess::WaitForProc(Proc);
+				// Poll: read pipe, parse phase, check cancel, sleep briefly.
+				while (FPlatformProcess::IsProcRunning(Proc))
+				{
+					if (Handle->bCancelRequested.load())
+					{
+						FPlatformProcess::TerminateProc(Proc, /*bKillTree*/ true);
+						bCancelled = true;
+						break;
+					}
+					if (PipeRead)
+					{
+						const FString Chunk = FPlatformProcess::ReadPipe(PipeRead);
+						if (!Chunk.IsEmpty())
+						{
+							ParseConvertStatus(Chunk, *Handle);
+							UE_LOG(LogPointForgeConvert, Log, TEXT("[pfconvert] %s"), *Chunk.TrimStartAndEnd());
+						}
+					}
+					FPlatformProcess::Sleep(0.1f);
+				}
+				// Drain anything left in the pipe.
+				if (PipeRead)
+				{
+					const FString Tail = FPlatformProcess::ReadPipe(PipeRead);
+					if (!Tail.IsEmpty())
+					{
+						ParseConvertStatus(Tail, *Handle);
+						UE_LOG(LogPointForgeConvert, Log, TEXT("[pfconvert] %s"), *Tail.TrimStartAndEnd());
+					}
+				}
 				FPlatformProcess::GetProcReturnCode(Proc, &RetCode);
 				FPlatformProcess::CloseProc(Proc);
-				bOk = (RetCode == 0);
-				UE_LOG(LogPointForgeConvert, Log, TEXT("ConvertAsync: pfconvert exited %d"), RetCode);
+				bOk = !bCancelled && (RetCode == 0);
+				UE_LOG(LogPointForgeConvert, Log, TEXT("ConvertAsync: pfconvert exited %d%s"), RetCode,
+					bCancelled ? TEXT(" (cancelled)") : TEXT(""));
 			}
 			else
 			{
 				UE_LOG(LogPointForgeConvert, Error, TEXT("ConvertAsync: failed to launch pfconvert.exe"));
+				Handle->SetStatus(TEXT("Failed to launch pfconvert.exe"));
+			}
+
+			if (PipeRead || PipeWrite)
+			{
+				FPlatformProcess::ClosePipe(PipeRead, PipeWrite);
 			}
 		}
 #endif
 
+		// On cancel: wipe the half-written cache dir.
+		if (bCancelled)
+		{
+			IFileManager::Get().DeleteDirectory(*CacheDir, /*RequireExists*/ false, /*Tree*/ true);
+			Handle->SetStatus(TEXT("Cancelled"));
+		}
+
 		bOk = bOk && IsConverted(CacheDir);
+
+		// Final state.
+		if (bCancelled)        { Handle->State.store(EPFConvertState::Cancelled); }
+		else if (bOk)          { Handle->State.store(EPFConvertState::Done);
+		                          Handle->SetStatus(TEXT("Done")); }
+		else                   { Handle->State.store(EPFConvertState::Failed);
+		                          if (Handle->GetStatus().IsEmpty()) { Handle->SetStatus(TEXT("Failed")); } }
+
 		AsyncTask(ENamedThreads::GameThread, [OnDone, bOk]() { OnDone.ExecuteIfBound(bOk); });
 	});
+
+	return Handle;
 }

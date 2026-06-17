@@ -90,9 +90,12 @@ void UPFPointCloudComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 		if (!(ElevMax > ElevMin) && Store.IsValid() && Store->IsValid())
 		{
 			const FPFFileMetadata& M = Store->GetMeta();
-			// world Z (source units) -> UE world after UnitScale (component world transform is applied separately)
-			ElevMin = static_cast<float>(M.BbMin[2] * UnitScale);
-			ElevMax = static_cast<float>(M.BbMax[2] * UnitScale);
+			// Vertices are uploaded relative to the cube centre (in source units treated as UE cm).
+			// WorldZ = (sourceZ - cubeCentreZ) + componentWorldZ.
+			const double CubeCentreZ = M.CubeMin[2] + M.CubeSize * 0.5;
+			const float CompZ = static_cast<float>(GetComponentLocation().Z);
+			ElevMin = static_cast<float>(M.BbMin[2] - CubeCentreZ) + CompZ;
+			ElevMax = static_cast<float>(M.BbMax[2] - CubeCentreZ) + CompZ;
 		}
 		PointMID->SetScalarParameterValue(TEXT("ElevationMinZ"), ElevMin);
 		PointMID->SetScalarParameterValue(TEXT("ElevationMaxZ"), ElevMax);
@@ -113,8 +116,14 @@ FPFViewerStatsBP UPFPointCloudComponent::GetStats() const
 	FPFViewerStatsBP Out;
 	if (Store.IsValid() && Store->IsValid())
 	{
-		Out.CloudPoints = static_cast<int64>(Store->GetMeta().PointCount);
-		Out.CloudNodes = static_cast<int32>(Store->GetMeta().NodeCount);
+		const FPFFileMetadata& M = Store->GetMeta();
+		Out.CloudPoints = static_cast<int64>(M.PointCount);
+		Out.CloudNodes  = static_cast<int32>(M.NodeCount);
+		// World Z range matching the elevation auto-range formula.
+		const double CubeCentreZ = M.CubeMin[2] + M.CubeSize * 0.5;
+		const float CompZ = static_cast<float>(GetComponentLocation().Z);
+		Out.CloudZMin = static_cast<float>(M.BbMin[2] - CubeCentreZ) + CompZ;
+		Out.CloudZMax = static_cast<float>(M.BbMax[2] - CubeCentreZ) + CompZ;
 	}
 	if (Stats.IsValid())
 	{

@@ -54,6 +54,9 @@ struct FPFViewerStatsBP
 	UPROPERTY(BlueprintReadOnly, Category = "PointForge") float ResidentMB = 0.f;
 	UPROPERTY(BlueprintReadOnly, Category = "PointForge") int32 LoadQueue = 0;
 	UPROPERTY(BlueprintReadOnly, Category = "PointForge") float FPS = 0.f;
+	// Cloud world-space Z range (used to set Elevation sliders correctly).
+	UPROPERTY(BlueprintReadOnly, Category = "PointForge") float CloudZMin = 0.f;
+	UPROPERTY(BlueprintReadOnly, Category = "PointForge") float CloudZMax = 0.f;
 };
 
 /**

@@ -185,9 +185,16 @@ except Exception:
     pass
 
 # --- 5. Color mode switch ----------------------------------------------------
+# Intensity: ComponentMask on Alpha (reliable — pin-name "A" fails silently in 5.5.4 Python).
+intensityAlpha = E(unreal.MaterialExpressionComponentMask, COL["math"], 375)
+intensityAlpha.set_editor_property("r", False)
+intensityAlpha.set_editor_property("g", False)
+intensityAlpha.set_editor_property("b", False)
+intensityAlpha.set_editor_property("a", True)
+connect(vc, "", intensityAlpha, "")
 white = const3(unreal.LinearColor(1, 1, 1, 1), COL["math"], 460)
 intensityRGB = E(unreal.MaterialExpressionMultiply, COL["math"], 400)
-connect(white, "", intensityRGB, "A"); connect(vc, "A", intensityRGB, "B")
+connect(white, "", intensityRGB, "A"); connect(intensityAlpha, "", intensityRGB, "B")
 
 zSub   = E(unreal.MaterialExpressionSubtract, COL["math"], 520)
 connect(wpz, "", zSub, "A"); connect(emin, "", zSub, "B")

@@ -36,6 +36,12 @@ public class PointForgeViewer : ModuleRules
 			"SlateCore",
 			"DeveloperSettings", // UPFConvertSettings (persistent convert params)
 		});
+
+		// File-open dialog (editor only — not available in cooked/shipping builds).
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.Add("DesktopPlatform");
+		}
 		
 		string VcpkgDir = Path.Combine(PointForgeRoot, "build", "vcpkg_installed", "x64-windows");
 		string ZstdInc = Path.Combine(VcpkgDir, "include");

@@ -1,6 +1,7 @@
 #include "PFViewerPanel.h"
 
 #include "PFPointCloudComponent.h"
+#include "PFPointCloudActor.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
 #include "Components/VerticalBox.h"
@@ -10,7 +11,10 @@
 #include "Components/TextBlock.h"
 #include "Components/Slider.h"
 #include "Components/CheckBox.h"
+#include "Components/ComboBoxString.h"
+#include "Components/Button.h"
 #include "Components/SlateWrapperTypes.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 UPFViewerPanel::UPFViewerPanel(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -20,6 +24,11 @@ UPFViewerPanel::UPFViewerPanel(const FObjectInitializer& ObjectInitializer)
 void UPFViewerPanel::SetTarget(UPFPointCloudComponent* InTarget)
 {
 	Target = InTarget;
+}
+
+void UPFViewerPanel::SetOwnerActor(APFPointCloudActor* InActor)
+{
+	OwnerActor = InActor;
 }
 
 TSharedRef<SWidget> UPFViewerPanel::RebuildWidget()
@@ -109,6 +118,77 @@ TSharedRef<SWidget> UPFViewerPanel::RebuildWidget()
 		RoundCheck->OnCheckStateChanged.AddDynamic(this, &UPFViewerPanel::OnRoundChanged);
 		AttenCheck->OnCheckStateChanged.AddDynamic(this, &UPFViewerPanel::OnAttenuateChanged);
 
+		// --- Extended runtime controls (mirror UPFPointCloudComponent UPROPERTYs) ---
+		UTextBlock* Section = AddLine(TEXT("— Render & Color —"));
+		Section->SetColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.8f, 0.6f)));
+
+		AddSlider(TEXT("Soft round"),       0.f,  0.5f,   0.0f, SoftRoundSlider, SoftRoundLabel);
+		AddSlider(TEXT("Emissive boost"),   0.f,  2.0f,   0.4f, EmissiveSlider,  EmissiveLabel);
+		AddSlider(TEXT("Unit scale"),       1.f,  1000.f, 100.f, UnitScaleSlider, UnitScaleLabel);
+		AddSlider(TEXT("Elev min Z"),       -1000000.f, 1000000.f, 0.f,    ElevMinSlider, ElevMinLabel);
+		AddSlider(TEXT("Elev max Z"),       -1000000.f, 1000000.f, 1000.f, ElevMaxSlider, ElevMaxLabel);
+
+		SoftRoundSlider->OnValueChanged.AddDynamic(this, &UPFViewerPanel::OnSoftRoundChanged);
+		EmissiveSlider ->OnValueChanged.AddDynamic(this, &UPFViewerPanel::OnEmissiveBoostChanged);
+		UnitScaleSlider->OnValueChanged.AddDynamic(this, &UPFViewerPanel::OnUnitScaleChanged);
+		ElevMinSlider  ->OnValueChanged.AddDynamic(this, &UPFViewerPanel::OnElevationMinChanged);
+		ElevMaxSlider  ->OnValueChanged.AddDynamic(this, &UPFViewerPanel::OnElevationMaxChanged);
+
+		// Fit elevation button — one click copies CloudZMin/Max → sliders.
+		{
+			FitElevationBtn = WidgetTree->ConstructWidget<UButton>();
+			UTextBlock* FitLbl = WidgetTree->ConstructWidget<UTextBlock>();
+			FitLbl->SetText(FText::FromString(TEXT("Fit Elevation to Cloud")));
+			FitLbl->SetColorAndOpacity(FSlateColor(FLinearColor::White));
+			FitElevationBtn->SetContent(FitLbl);
+			VBox->AddChildToVerticalBox(FitElevationBtn);
+			FitElevationBtn->OnClicked.AddDynamic(this, &UPFViewerPanel::OnFitElevationClicked);
+		}
+
+		// ColorMode dropdown.
+		{
+			UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
+			UTextBlock* L = WidgetTree->ConstructWidget<UTextBlock>();
+			L->SetText(FText::FromString(TEXT("Color mode")));
+			L->SetColorAndOpacity(FSlateColor(FLinearColor::White));
+			L->SetMinDesiredWidth(150.f);
+			if (UHorizontalBoxSlot* LS = Row->AddChildToHorizontalBox(L))
+			{
+				LS->SetVerticalAlignment(VAlign_Center);
+				LS->SetPadding(FMargin(0, 0, 8, 0));
+			}
+			ColorModeCombo = WidgetTree->ConstructWidget<UComboBoxString>();
+			ColorModeCombo->AddOption(TEXT("RGB"));
+			ColorModeCombo->AddOption(TEXT("Intensity"));
+			ColorModeCombo->AddOption(TEXT("Elevation"));
+			ColorModeCombo->AddOption(TEXT("Classification"));
+			ColorModeCombo->SetSelectedIndex(0);
+			ColorModeCombo->OnSelectionChanged.AddDynamic(this, &UPFViewerPanel::OnColorModeSelected);
+			if (UHorizontalBoxSlot* SS = Row->AddChildToHorizontalBox(ColorModeCombo))
+			{
+				SS->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+				SS->SetVerticalAlignment(VAlign_Center);
+			}
+			VBox->AddChildToVerticalBox(Row);
+		}
+
+		AddCheck(TEXT("Use clipping plane"),       false, UseClipCheck);
+		AddCheck(TEXT("Color is 16-bit (reload)"), true,  Color16BitCheck);
+		UseClipCheck   ->OnCheckStateChanged.AddDynamic(this, &UPFViewerPanel::OnUseClipChanged);
+		Color16BitCheck->OnCheckStateChanged.AddDynamic(this, &UPFViewerPanel::OnColor16BitChanged);
+
+		// --- EDL ---
+		UTextBlock* EDLSection = AddLine(TEXT("— Eye-Dome Lighting —"));
+		EDLSection->SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.85f, 0.4f)));
+
+		AddSlider(TEXT("EDL strength"),  0.f, 5.f,  0.5f, EDLStrengthSlider, EDLStrengthLabel);
+		AddSlider(TEXT("EDL radius px"), 0.1f, 10.f, 1.0f, EDLRadiusSlider,  EDLRadiusLabel);
+		AddCheck(TEXT("EDL enabled"), true, EDLEnableCheck);
+
+		EDLStrengthSlider->OnValueChanged.AddDynamic(this, &UPFViewerPanel::OnEDLStrengthChanged);
+		EDLRadiusSlider  ->OnValueChanged.AddDynamic(this, &UPFViewerPanel::OnEDLRadiusChanged);
+		EDLEnableCheck   ->OnCheckStateChanged.AddDynamic(this, &UPFViewerPanel::OnEDLEnableChanged);
+
 		UTextBlock* Help = AddLine(TEXT("RMB drag: look   WASD: move   Q/E: down/up   Shift: fast"));
 		Help->SetColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.6f)));
 	}
@@ -136,6 +216,34 @@ void UPFViewerPanel::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 	{
 		UploadsLabel->SetText(FText::FromString(FString::Printf(TEXT("Uploads/frame: %d"), FMath::RoundToInt(UploadsSlider->GetValue()))));
 	}
+	if (SoftRoundLabel && SoftRoundSlider)
+	{
+		SoftRoundLabel->SetText(FText::FromString(FString::Printf(TEXT("Soft round: %.2f"), SoftRoundSlider->GetValue())));
+	}
+	if (EmissiveLabel && EmissiveSlider)
+	{
+		EmissiveLabel->SetText(FText::FromString(FString::Printf(TEXT("Emissive boost: %.2f"), EmissiveSlider->GetValue())));
+	}
+	if (UnitScaleLabel && UnitScaleSlider)
+	{
+		UnitScaleLabel->SetText(FText::FromString(FString::Printf(TEXT("Unit scale: %d"), FMath::RoundToInt(UnitScaleSlider->GetValue()))));
+	}
+	if (ElevMinLabel && ElevMinSlider)
+	{
+		ElevMinLabel->SetText(FText::FromString(FString::Printf(TEXT("Elev min Z: %.0f"), ElevMinSlider->GetValue())));
+	}
+	if (ElevMaxLabel && ElevMaxSlider)
+	{
+		ElevMaxLabel->SetText(FText::FromString(FString::Printf(TEXT("Elev max Z: %.0f"), ElevMaxSlider->GetValue())));
+	}
+	if (EDLStrengthLabel && EDLStrengthSlider)
+	{
+		EDLStrengthLabel->SetText(FText::FromString(FString::Printf(TEXT("EDL strength: %.2f"), EDLStrengthSlider->GetValue())));
+	}
+	if (EDLRadiusLabel && EDLRadiusSlider)
+	{
+		EDLRadiusLabel->SetText(FText::FromString(FString::Printf(TEXT("EDL radius: %.1f px"), EDLRadiusSlider->GetValue())));
+	}
 
 	if (!StatsText || !Target.IsValid())
 	{
@@ -145,6 +253,7 @@ void UPFViewerPanel::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 	const FPFViewerStatsBP S = Target->GetStats();
 	const FString Txt = FString::Printf(
 		TEXT("Cloud: %lld pts, %d nodes\n")
+		TEXT("Z range: %.1f .. %.1f cm\n")
 		TEXT("Visible nodes:  %d\n")
 		TEXT("Drawn nodes:    %d\n")
 		TEXT("Points on GPU:  %lld\n")
@@ -152,7 +261,8 @@ void UPFViewerPanel::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 		TEXT("GPU resident:   %.1f MB\n")
 		TEXT("Load queue:     %d\n")
 		TEXT("FPS:            %.1f"),
-		S.CloudPoints, S.CloudNodes, S.VisibleNodes, S.DrawnNodes,
+		S.CloudPoints, S.CloudNodes, S.CloudZMin, S.CloudZMax,
+		S.VisibleNodes, S.DrawnNodes,
 		S.PointsOnGpu, S.DrawnPoints, S.ResidentMB, S.LoadQueue, S.FPS);
 	StatsText->SetText(FText::FromString(Txt));
 }
@@ -185,4 +295,96 @@ void UPFViewerPanel::OnRoundChanged(bool bChecked)
 void UPFViewerPanel::OnAttenuateChanged(bool bChecked)
 {
 	if (Target.IsValid()) { Target->bAttenuate = bChecked; }
+}
+
+void UPFViewerPanel::OnSoftRoundChanged(float Value)
+{
+	if (Target.IsValid()) { Target->SoftRoundFalloff = Value; }
+}
+
+void UPFViewerPanel::OnEmissiveBoostChanged(float Value)
+{
+	// Component doesn't have EmissiveBoost as a UPROPERTY yet — push straight to the MID.
+	if (!Target.IsValid()) { return; }
+	if (UMaterialInstanceDynamic* MID = Target->PointMID)
+	{
+		MID->SetScalarParameterValue(TEXT("EmissiveBoost"), Value);
+	}
+}
+
+void UPFViewerPanel::OnUnitScaleChanged(float Value)
+{
+	if (Target.IsValid()) { Target->UnitScale = Value; }
+}
+
+void UPFViewerPanel::OnElevationMinChanged(float Value)
+{
+	if (Target.IsValid()) { Target->ElevationMinZ = Value; }
+}
+
+void UPFViewerPanel::OnElevationMaxChanged(float Value)
+{
+	if (Target.IsValid()) { Target->ElevationMaxZ = Value; }
+}
+
+void UPFViewerPanel::OnFitElevationClicked()
+{
+	if (!Target.IsValid()) { return; }
+	const FPFViewerStatsBP S = Target->GetStats();
+	// Only apply if the cloud actually reported a range.
+	if (S.CloudZMax <= S.CloudZMin) { return; }
+
+	Target->ElevationMinZ = S.CloudZMin;
+	Target->ElevationMaxZ = S.CloudZMax;
+	// Also sync sliders so they visually reflect the new values.
+	if (ElevMinSlider) { ElevMinSlider->SetValue(S.CloudZMin); }
+	if (ElevMaxSlider) { ElevMaxSlider->SetValue(S.CloudZMax); }
+}
+
+void UPFViewerPanel::OnColorModeSelected(FString SelectedItem, ESelectInfo::Type SelectionType)
+{
+	if (!Target.IsValid() || !ColorModeCombo) { return; }
+	const int32 Idx = ColorModeCombo->GetSelectedIndex();
+	if (Idx >= 0 && Idx <= static_cast<int32>(EPFColorMode::Classification))
+	{
+		Target->ColorMode = static_cast<EPFColorMode>(Idx);
+	}
+}
+
+void UPFViewerPanel::OnUseClipChanged(bool bChecked)
+{
+	if (Target.IsValid()) { Target->bUseClippingPlane = bChecked; }
+}
+
+void UPFViewerPanel::OnColor16BitChanged(bool bChecked)
+{
+	// Note: takes effect on next OpenOctreeDir (colour is baked at decode time).
+	if (Target.IsValid()) { Target->bColorIs16Bit = bChecked; }
+}
+
+void UPFViewerPanel::OnEDLStrengthChanged(float Value)
+{
+	if (OwnerActor.IsValid())
+	{
+		const float Radius = EDLRadiusSlider ? EDLRadiusSlider->GetValue() : OwnerActor->EDLRadius;
+		OwnerActor->SetEDLParams(Value, Radius);
+	}
+}
+
+void UPFViewerPanel::OnEDLRadiusChanged(float Value)
+{
+	if (OwnerActor.IsValid())
+	{
+		const float Strength = EDLStrengthSlider ? EDLStrengthSlider->GetValue() : OwnerActor->EDLStrength;
+		OwnerActor->SetEDLParams(Strength, Value);
+	}
+}
+
+void UPFViewerPanel::OnEDLEnableChanged(bool bChecked)
+{
+	if (OwnerActor.IsValid() && OwnerActor->PostProcess)
+	{
+		OwnerActor->PostProcess->bEnabled = bChecked;
+		OwnerActor->bEnableEDL = bChecked;
+	}
 }
