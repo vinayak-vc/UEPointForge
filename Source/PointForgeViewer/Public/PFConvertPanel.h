@@ -54,24 +54,24 @@ protected:
 
 	TWeakObjectPtr<APFPointCloudActor> Target;
 
-	UPROPERTY(Transient) TObjectPtr<UEditableTextBox> PathBox;
-	UPROPERTY(Transient) TObjectPtr<UButton>          BrowseBtn;
-	UPROPERTY(Transient) TObjectPtr<USpinBox>         SpacingSpin;
-	UPROPERTY(Transient) TObjectPtr<USpinBox>         LeafSpin;
-	UPROPERTY(Transient) TObjectPtr<USpinBox>         MaxDepthSpin;
-	UPROPERTY(Transient) TObjectPtr<USpinBox>         ChunkSpin;
-	UPROPERTY(Transient) TObjectPtr<USpinBox>         FlushSpin;
-	UPROPERTY(Transient) TObjectPtr<UCheckBox>        KeepChunksCheck;
-	UPROPERTY(Transient) TObjectPtr<UCheckBox>        VerboseCheck;
-	UPROPERTY(Transient) TObjectPtr<UCheckBox>        CompressCheck;
-	UPROPERTY(Transient) TObjectPtr<UTextBlock>       StatusText;
-	UPROPERTY(Transient) TObjectPtr<UButton>          ConvertBtn;
-	UPROPERTY(Transient) TObjectPtr<UButton>          CancelBtn;
-	UPROPERTY(Transient) TObjectPtr<UButton>          SaveBtn;
-	UPROPERTY(Transient) TObjectPtr<UButton>          ResetBtn;
-	UPROPERTY(Transient) TObjectPtr<UTextBlock>       CacheSizeText;
-	UPROPERTY(Transient) TObjectPtr<UButton>          ClearThisBtn;
-	UPROPERTY(Transient) TObjectPtr<UButton>          ClearAllBtn;
+	TObjectPtr<UEditableTextBox> PathBox;
+	TObjectPtr<UButton>          BrowseBtn;
+	TObjectPtr<USpinBox>         SpacingSpin;
+	TObjectPtr<USpinBox>         LeafSpin;
+	TObjectPtr<USpinBox>         MaxDepthSpin;
+	TObjectPtr<USpinBox>         ChunkSpin;
+	TObjectPtr<USpinBox>         FlushSpin;
+	TObjectPtr<UCheckBox>        KeepChunksCheck;
+	TObjectPtr<UCheckBox>        VerboseCheck;
+	TObjectPtr<UCheckBox>        CompressCheck;
+	TObjectPtr<UTextBlock>       StatusText;
+	TObjectPtr<UButton>          ConvertBtn;
+	TObjectPtr<UButton>          CancelBtn;
+	TObjectPtr<UButton>          SaveBtn;
+	TObjectPtr<UButton>          ResetBtn;
+	TObjectPtr<UTextBlock>       CacheSizeText;
+	TObjectPtr<UButton>          ClearThisBtn;
+	TObjectPtr<UButton>          ClearAllBtn;
 
 	float CacheLabelTimer = 0.f;
 };
