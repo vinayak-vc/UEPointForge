@@ -185,16 +185,11 @@ except Exception:
     pass
 
 # --- 5. Color mode switch ----------------------------------------------------
-# Intensity: ComponentMask on Alpha (reliable — pin-name "A" fails silently in 5.5.4 Python).
-intensityAlpha = E(unreal.MaterialExpressionComponentMask, COL["math"], 375)
-intensityAlpha.set_editor_property("r", False)
-intensityAlpha.set_editor_property("g", False)
-intensityAlpha.set_editor_property("b", False)
-intensityAlpha.set_editor_property("a", True)
-connect(vc, "", intensityAlpha, "")
+# Intensity: Connect VertexColor A pin directly.
 white = const3(unreal.LinearColor(1, 1, 1, 1), COL["math"], 460)
 intensityRGB = E(unreal.MaterialExpressionMultiply, COL["math"], 400)
-connect(white, "", intensityRGB, "A"); connect(intensityAlpha, "", intensityRGB, "B")
+connect(white, "", intensityRGB, "A")
+connect(vc, "A", intensityRGB, "B")
 
 zSub   = E(unreal.MaterialExpressionSubtract, COL["math"], 520)
 connect(wpz, "", zSub, "A"); connect(emin, "", zSub, "B")
@@ -215,49 +210,28 @@ classUV = E(unreal.MaterialExpressionTextureCoordinate, COL["param"], 650)
 classUV.set_editor_property("coordinate_index", 1)
 classCode = mask(classUV, True, False, False, False, COL["split"], 650)
 
-# ASPRS classification palette — built as a chain of If(classCode, threshold, A, B, Eq).
-# classCode is a float 0..255. We compare with midpoints (e.g. 0.5, 1.5, 2.5, ...)
-# to bucket into integer classes.
-# Class 0: Never classified — grey
-# Class 1: Unassigned       — light grey
-# Class 2: Ground           — brown
-# Class 3: Low Vegetation   — light green
-# Class 4: Medium Vegetation — green
-# Class 5: High Vegetation  — dark green
-# Class 6: Building         — red
-# Class 7: Low Point        — magenta
-# Class 8: Reserved/Model Key — dark grey
-# Class 9: Water            — blue
-# Default (>9)              — yellow
-
-palette = {
-    0: unreal.LinearColor(0.50, 0.50, 0.50, 1),   # grey (never classified)
-    1: unreal.LinearColor(0.70, 0.70, 0.70, 1),   # light grey (unassigned)
-    2: unreal.LinearColor(0.55, 0.35, 0.15, 1),   # brown (ground)
-    3: unreal.LinearColor(0.40, 0.80, 0.20, 1),   # light green (low veg)
-    4: unreal.LinearColor(0.20, 0.65, 0.10, 1),   # green (med veg)
-    5: unreal.LinearColor(0.05, 0.45, 0.05, 1),   # dark green (high veg)
-    6: unreal.LinearColor(0.90, 0.15, 0.10, 1),   # red (building)
-    7: unreal.LinearColor(0.80, 0.10, 0.80, 1),   # magenta (low point/noise)
-    8: unreal.LinearColor(0.35, 0.35, 0.35, 1),   # dark grey (reserved)
-    9: unreal.LinearColor(0.10, 0.30, 0.90, 1),   # blue (water)
-}
-default_class_color = const3(unreal.LinearColor(0.90, 0.85, 0.10, 1), COL["emiss"], -100)  # yellow (other)
-
-# Build the If-chain from the bottom up (highest class first).
-prev = default_class_color  # >9 fallback
-for cls_id in sorted(palette.keys(), reverse=True):
-    col_node = const3(palette[cls_id], COL["emiss"], -100 - (10 - cls_id) * 40)
-    threshold = const(cls_id + 0.5, COL["emiss"], -100 - (10 - cls_id) * 40 + 20)
-    if_node = E(unreal.MaterialExpressionIf, COL["emiss"], -100 - (10 - cls_id) * 40 + 10)
-    connect(classCode, "", if_node, "A")
-    connect(threshold, "", if_node, "B")
-    connect(prev, "", if_node, "A>B")      # class > threshold → higher class color
-    connect(col_node, "", if_node, "A<B")   # class < threshold → this class color
-    connect(col_node, "", if_node, "A==B")  # class == threshold → this class color
-    prev = if_node
-
-classRGB = prev  # The final If-chain result
+# ASPRS classification palette — implemented as a clean HLSL Custom expression.
+palette_code = """
+int c = (int)(InClass);
+if (c == 0) return float3(0.50, 0.50, 0.50);
+if (c == 1) return float3(0.70, 0.70, 0.70);
+if (c == 2) return float3(0.55, 0.35, 0.15);
+if (c == 3) return float3(0.40, 0.80, 0.20);
+if (c == 4) return float3(0.20, 0.65, 0.10);
+if (c == 5) return float3(0.05, 0.45, 0.05);
+if (c == 6) return float3(0.90, 0.15, 0.10);
+if (c == 7) return float3(0.80, 0.10, 0.80);
+if (c == 8) return float3(0.35, 0.35, 0.35);
+if (c == 9) return float3(0.10, 0.30, 0.90);
+return float3(0.90, 0.85, 0.10);
+"""
+classRGB = E(unreal.MaterialExpressionCustom, COL["emiss"], 100)
+classRGB.set_editor_property("code", palette_code)
+classRGB.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+custom_in = unreal.CustomInput()
+custom_in.set_editor_property("input_name", "InClass")
+classRGB.set_editor_property("inputs", [custom_in])
+connect(classCode, "", classRGB, "InClass")
 
 # --- 5c. Mode switch chain: RGB(0) → Intensity(1) → Elevation(2) → Classification(3)
 modeSat1 = E(unreal.MaterialExpressionSaturate, COL["emiss"], 0)

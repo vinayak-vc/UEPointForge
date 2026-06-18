@@ -111,15 +111,46 @@ public class PointForgeViewer : ModuleRules
 			PublicDefinitions.Add("PF_LINK_PFCORE=0");
 		}
 
-		// Package pfconvert.exe and its dependencies for standalone builds
+		// Stage pfconvert.exe and companion DLLs for standalone/packaged builds.
+		// Two-arg RuntimeDependencies.Add(dest, src) lets UBT copy from the build
+		// dir even when the file doesn't yet live under the plugin tree.
+		// Destination uses the absolute ThirdParty path so pfconvert's DLL search
+		// (same directory as the exe) finds laszip3.dll / zstd.dll next to it.
 		string ThirdPartyDir = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "Binaries", "ThirdParty"));
-		string[] ThirdPartyFiles = { "pfconvert.exe", "laszip3.dll", "E57Format.dll", "xerces-c_3_3.dll", "zstd.dll" };
-		foreach (string FileName in ThirdPartyFiles)
+		string PfReleaseDir  = Path.Combine(PointForgeRoot, "build", "Release");
+		string VcpkgBinDir   = Path.Combine(PointForgeRoot, "build", "vcpkg_installed", "x64-windows", "bin");
+
+		// Ordered: pfconvert.exe first so the log is easy to read.
+		var BundledFiles = new System.Collections.Generic.Dictionary<string, string[]>
 		{
-			string FilePath = Path.Combine(ThirdPartyDir, FileName);
-			if (File.Exists(FilePath))
+			// filename → candidate source dirs (first existing file wins)
+			{ "pfconvert.exe",    new[] { PfReleaseDir, ThirdPartyDir } },
+			{ "laszip3.dll",      new[] { PfReleaseDir, ThirdPartyDir } },
+			{ "zstd.dll",         new[] { VcpkgBinDir,  PfReleaseDir, ThirdPartyDir } },
+			{ "E57Format.dll",    new[] { PfReleaseDir, ThirdPartyDir } },
+			{ "xerces-c_3_3.dll", new[] { PfReleaseDir, ThirdPartyDir } },
+		};
+
+		foreach (var kvp in BundledFiles)
+		{
+			string FileName = kvp.Key;
+			string SrcPath  = "";
+			foreach (string Dir in kvp.Value)
 			{
-				RuntimeDependencies.Add(FilePath);
+				string Candidate = Path.Combine(Dir, FileName);
+				if (File.Exists(Candidate)) { SrcPath = Candidate; break; }
+			}
+			if (!string.IsNullOrEmpty(SrcPath))
+			{
+				string DestPath = Path.Combine(ThirdPartyDir, FileName);
+				// Two-arg form: UBT copies src → dest during staging regardless of
+				// whether dest already exists in the source tree.
+				RuntimeDependencies.Add(DestPath, SrcPath);
+				Console.WriteLine("PointForgeViewer: bundling " + FileName + " from " + SrcPath);
+			}
+			else
+			{
+				Console.WriteLine("PointForgeViewer: standalone bundle not found, skipping: " + FileName);
 			}
 		}
 	}

@@ -111,8 +111,18 @@ FString FPFConvert::LocatePfConvert(const FString& Override)
 		}
 	}
 
-	const FString Fallback = TEXT("C:/UnrealProject/PointForge/build/Release/pfconvert.exe");
-	return FPaths::FileExists(Fallback) ? Fallback : FString();
+	// Dev fallback: look beside the game executable (useful when running from the
+	// IDE before packaging, or when the developer copies pfconvert.exe there).
+	const FString BesideExe = FPaths::Combine(FPlatformProcess::BaseDir(),
+		TEXT("pfconvert.exe"));
+	if (FPaths::FileExists(BesideExe))
+	{
+		return BesideExe;
+	}
+
+	// Last-resort dev path — only present on the original dev machine.
+	const FString DevPath = TEXT("C:/UnrealProject/PointForge/build/Release/pfconvert.exe");
+	return FPaths::FileExists(DevPath) ? DevPath : FString();
 }
 
 // Parse a chunk of pfconvert stdout and refine the handle's status text. Looks

@@ -131,9 +131,22 @@ double FPFOctreeStore::GetNodeSpacing(uint8 Level) const
 
 FColor FPFOctreeStore::ColorOf(const FPFPackedPoint& P) const
 {
-	// Alpha carries intensity (high byte of the 16-bit field) so the billboard
-	// material can colour by intensity without re-decoding the cloud.
-	const uint8 IntensityByte = static_cast<uint8>(P.Intensity >> 8);
+	// Alpha carries intensity so the billboard material can colour by intensity.
+	// Many LAS files store 8-bit or 12-bit intensity in the 16-bit field. 
+	// We use a simple heuristic to preserve brightness.
+	uint8 IntensityByte;
+	if (P.Intensity <= 255)
+	{
+		IntensityByte = static_cast<uint8>(P.Intensity);
+	}
+	else if (P.Intensity <= 4095)
+	{
+		IntensityByte = static_cast<uint8>((P.Intensity * 255) / 4095);
+	}
+	else
+	{
+		IntensityByte = static_cast<uint8>(P.Intensity >> 8);
+	}
 
 	if (!bHasColor)
 	{
