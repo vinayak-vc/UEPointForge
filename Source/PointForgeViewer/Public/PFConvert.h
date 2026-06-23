@@ -39,6 +39,24 @@ struct POINTFORGEVIEWER_API FPFConvertHandle
 		FScopeLock Lock(&StatusCS);
 		return StatusText;
 	}
+
+	/** 0–1 progress estimate updated by ParseConvertStatus. */
+	std::atomic<float> Progress{0.f};
+
+	mutable FCriticalSection LogCS;
+	TArray<FString> LogLines;
+
+	void AppendLog(const FString& Line)
+	{
+		FScopeLock Lock(&LogCS);
+		LogLines.Add(Line);
+	}
+
+	TArray<FString> GetLogLines() const
+	{
+		FScopeLock Lock(&LogCS);
+		return LogLines;
+	}
 };
 using FPFConvertHandlePtr = TSharedPtr<FPFConvertHandle, ESPMode::ThreadSafe>;
 

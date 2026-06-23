@@ -100,6 +100,7 @@ void APFPointCloudActor::LoadPointCloudFile(const FString& SourceFile)
 			UE_LOG(LogPointForgeActor, Error, TEXT("LoadPointCloudFile: OpenOctreeDir failed for %s"), *CacheDir);
 			return;
 		}
+		Self->HideConvertPanel();
 		if (Self->bShowPanel)
 		{
 			Self->ShowPanel();

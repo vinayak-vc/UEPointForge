@@ -14,7 +14,7 @@ THIRD_PARTY_INCLUDES_START
 #include <zstd.h>
 THIRD_PARTY_INCLUDES_END
 
-DEFINE_LOG_CATEGORY_STATIC(LogPointForge, Log, All);
+DEFINE_LOG_CATEGORY(LogPointForge);
 
 FPFOctreeStore::~FPFOctreeStore()
 {

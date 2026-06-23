@@ -62,7 +62,8 @@ def E(cls, x, y):
     return mel.create_material_expression(mat, cls, x, y)
 
 def C(s, sp, d, dp):
-    mel.connect_material_expressions(s, sp, d, dp)
+    if not mel.connect_material_expressions(s, sp, d, dp):
+        unreal.log_error(f"Failed to connect {s} [{sp}] -> {d} [{dp}]")
 
 def K(v, x, y):
     n = E(unreal.MaterialExpressionConstant, x, y)
@@ -87,7 +88,7 @@ def Max(a, b, x, y):
     n = E(unreal.MaterialExpressionMax,      x, y); C(a,"",n,"A"); C(b,"",n,"B"); return n
 def Clamp(a, mn, mx, x, y):
     n = E(unreal.MaterialExpressionClamp, x, y)
-    C(a,"",n,"Input")
+    C(a,"",n,"")
     n.set_editor_property("min_default", mn)
     n.set_editor_property("max_default", mx)
     return n
@@ -139,8 +140,9 @@ def DepthAt(uv_node, x, y):
     try:
         sd.set_editor_property("input_mode", _SD_COORD)
     except Exception as _ex:
-        unreal.log_error("SceneDepth input_mode failed — neighbor taps may be wrong: " + str(_ex))
-    C(uv_node, "", sd, "Input")
+        unreal.log_warning("SceneDepth input_mode failed: " + str(_ex))
+    # 'Coordinates' is the correct pin name, but '' forces UE to pick the first one.
+    C(uv_node, "", sd, "")
     return sd
 
 # ---- 3. Parameters ----------------------------------------------------------
@@ -234,8 +236,12 @@ neg_prod = Mul(Mul(p_strength, avg, 300, 350), K(-1.0, 300, 450), 400, 350)
 edl_fac  = Exp2(neg_prod, 500, 350)
 
 # ---- 12. Modulate scene color and output to Emissive -----------------------
-sc  = E(unreal.MaterialExpressionSceneColor, 600, 250)
-out = Mul(sc, edl_fac, 700, 300)
+sc  = E(unreal.MaterialExpressionSceneTexture, 600, 250)
+# Use integer 14 which corresponds to PPI_PostProcessInput0 in UE5, bypassing any python enum naming issues.
+sc.set_editor_property("scene_texture_id", unreal.SceneTextureId.cast(14))
+out = E(unreal.MaterialExpressionMultiply, 700, 300)
+C(sc, "Color", out, "A")
+C(edl_fac, "", out, "B")
 
 MP_EMISSIVE = None
 for _nm in dir(unreal.MaterialProperty):

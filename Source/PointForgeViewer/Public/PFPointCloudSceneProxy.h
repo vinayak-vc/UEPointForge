@@ -74,7 +74,7 @@ private:
 	TSharedPtr<FPFOctreeStore> Store;
 	TSharedPtr<FPFViewerStats, ESPMode::ThreadSafe> Stats;
 
-	UMaterialInterface* Material = nullptr;
+	FMaterialRenderProxy* MaterialRenderProxy = nullptr;  // captured on game thread; safe on render thread
 	FMaterialRelevance MaterialRelevance;
 	float UnitScale = 100.f;
 

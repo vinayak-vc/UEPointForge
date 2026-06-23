@@ -14,11 +14,17 @@
 #include "Components/CheckBox.h"
 #include "Components/Button.h"
 #include "Components/SlateWrapperTypes.h"
+#include "Components/PanelWidget.h"
+#include "Components/ProgressBar.h"
+#include "Components/ScrollBox.h"
+#include "Components/SizeBox.h"
 
-#if WITH_EDITOR
-#include "DesktopPlatformModule.h"
-#include "IDesktopPlatform.h"
 #include "Framework/Application/SlateApplication.h"
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Windows/WindowsHWrapper.h"
+#include <commdlg.h>
+#include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
 void UPFConvertPanel::SetTarget(APFPointCloudActor* InTarget)
@@ -34,200 +40,115 @@ void UPFConvertPanel::SetSourcePath(const FString& InPath)
 	}
 }
 
-TSharedRef<SWidget> UPFConvertPanel::RebuildWidget()
-{
-	if (WidgetTree && WidgetTree->RootWidget == nullptr)
-	{
-		UBorder* Root = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("PFCRoot"));
-		Root->SetBrushColor(FLinearColor(0.02f, 0.03f, 0.05f, 0.90f));
-		Root->SetPadding(FMargin(10.f));
-		WidgetTree->RootWidget = Root;
-
-		UVerticalBox* VBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("PFCVBox"));
-		Root->SetContent(VBox);
-
-		const FSlateColor White(FLinearColor::White);
-		const FSlateColor Grey(FLinearColor(0.7f, 0.7f, 0.7f));
-
-		// Title
-		UTextBlock* Title = WidgetTree->ConstructWidget<UTextBlock>();
-		Title->SetText(FText::FromString(TEXT("PointForge Convert")));
-		Title->SetColorAndOpacity(FSlateColor(FLinearColor(0.4f, 0.8f, 1.0f)));
-		VBox->AddChildToVerticalBox(Title);
-
-		// --- Source file path row ---
-		{
-			UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
-			PathBox = WidgetTree->ConstructWidget<UEditableTextBox>();
-			PathBox->SetHintText(FText::FromString(TEXT("e.g. E:/Model/scan.laz")));
-			if (UHorizontalBoxSlot* S = Row->AddChildToHorizontalBox(PathBox))
-			{
-				S->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-				S->SetVerticalAlignment(VAlign_Center);
-				S->SetPadding(FMargin(0, 0, 4, 0));
-			}
-
-			BrowseBtn = WidgetTree->ConstructWidget<UButton>();
-			UTextBlock* BrowseLbl = WidgetTree->ConstructWidget<UTextBlock>();
-			BrowseLbl->SetText(FText::FromString(TEXT("Browse...")));
-			BrowseLbl->SetColorAndOpacity(White);
-			BrowseBtn->SetContent(BrowseLbl);
-			if (UHorizontalBoxSlot* S = Row->AddChildToHorizontalBox(BrowseBtn))
-			{
-				S->SetVerticalAlignment(VAlign_Center);
-			}
-			VBox->AddChildToVerticalBox(Row);
-		}
-
-		// --- Spin-box helper ---
-		auto AddSpin = [&](const FString& Label, float Mn, float Mx, float Delta, int32 Frac, float InitVal,
-			TObjectPtr<USpinBox>& OutSpin)
-		{
-			UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
-			UTextBlock* L = WidgetTree->ConstructWidget<UTextBlock>();
-			L->SetText(FText::FromString(Label));
-			L->SetColorAndOpacity(Grey);
-			L->SetMinDesiredWidth(140.f);
-			if (UHorizontalBoxSlot* LS = Row->AddChildToHorizontalBox(L))
-			{
-				LS->SetVerticalAlignment(VAlign_Center);
-				LS->SetPadding(FMargin(0, 0, 6, 0));
-			}
-			OutSpin = WidgetTree->ConstructWidget<USpinBox>();
-			OutSpin->SetMinValue(Mn); OutSpin->SetMaxValue(Mx);
-			OutSpin->SetMinSliderValue(Mn); OutSpin->SetMaxSliderValue(Mx);
-			OutSpin->SetDelta(Delta);
-			OutSpin->SetMinFractionalDigits(Frac); OutSpin->SetMaxFractionalDigits(Frac);
-			OutSpin->SetValue(InitVal);
-			if (UHorizontalBoxSlot* SS = Row->AddChildToHorizontalBox(OutSpin))
-			{
-				SS->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-				SS->SetVerticalAlignment(VAlign_Center);
-			}
-			VBox->AddChildToVerticalBox(Row);
-		};
-
-		const UPFConvertSettings* S = UPFConvertSettings::Get();
-		AddSpin(TEXT("Spacing (0=auto)"),  0.0f,          100.0f,          0.001f,   4, S->Spacing,                          SpacingSpin);
-		AddSpin(TEXT("Leaf size"),         1000.0f,  2'000'000.0f,       1000.0f,    0, static_cast<float>(S->LeafSize),     LeafSpin);
-		AddSpin(TEXT("Max depth"),         1.0f,           30.0f,            1.0f,    0, static_cast<float>(S->MaxDepth),     MaxDepthSpin);
-		AddSpin(TEXT("Chunk depth"),       0.0f,           10.0f,            1.0f,    0, static_cast<float>(S->ChunkDepth),   ChunkSpin);
-		AddSpin(TEXT("Flush budget (pts)"),1'000'000.0f,   268'435'456.0f, 1'000'000.0f, 0, static_cast<float>(S->FlushBudget), FlushSpin);
-
-		// --- Checkbox helper ---
-		auto AddCheck = [&](const FString& Label, bool bVal, TObjectPtr<UCheckBox>& OutCheck)
-		{
-			UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
-			OutCheck = WidgetTree->ConstructWidget<UCheckBox>();
-			OutCheck->SetIsChecked(bVal);
-			Row->AddChildToHorizontalBox(OutCheck);
-			UTextBlock* L = WidgetTree->ConstructWidget<UTextBlock>();
-			L->SetText(FText::FromString(Label));
-			L->SetColorAndOpacity(Grey);
-			if (UHorizontalBoxSlot* LS = Row->AddChildToHorizontalBox(L))
-			{
-				LS->SetVerticalAlignment(VAlign_Center);
-				LS->SetPadding(FMargin(6, 0, 0, 0));
-			}
-			VBox->AddChildToVerticalBox(Row);
-		};
-
-		AddCheck(TEXT("Keep chunks (debug)"), S->bKeepChunks, KeepChunksCheck);
-		AddCheck(TEXT("Verbose log"),         S->bVerbose,    VerboseCheck);
-		AddCheck(TEXT("Compress (zstd)"),     S->bCompress,   CompressCheck);
-
-		// --- Action buttons row ---
-		{
-			UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
-
-			auto MakeBtn = [&](const FString& Lbl, TObjectPtr<UButton>& OutBtn)
-			{
-				OutBtn = WidgetTree->ConstructWidget<UButton>();
-				UTextBlock* T = WidgetTree->ConstructWidget<UTextBlock>();
-				T->SetText(FText::FromString(Lbl));
-				T->SetColorAndOpacity(White);
-				OutBtn->SetContent(T);
-				if (UHorizontalBoxSlot* BS = Row->AddChildToHorizontalBox(OutBtn))
-				{
-					BS->SetPadding(FMargin(0, 0, 4, 0));
-				}
-			};
-
-			MakeBtn(TEXT("Convert"), ConvertBtn);
-			MakeBtn(TEXT("Cancel"),  CancelBtn);
-			MakeBtn(TEXT("Save"),    SaveBtn);
-			MakeBtn(TEXT("Reset"),   ResetBtn);
-			VBox->AddChildToVerticalBox(Row);
-		}
-
-		// --- Cache management ---
-		{
-			UTextBlock* CacheHdr = WidgetTree->ConstructWidget<UTextBlock>();
-			CacheHdr->SetText(FText::FromString(TEXT("— Cache —")));
-			CacheHdr->SetColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.9f, 0.6f)));
-			VBox->AddChildToVerticalBox(CacheHdr);
-
-			CacheSizeText = WidgetTree->ConstructWidget<UTextBlock>();
-			CacheSizeText->SetText(FText::FromString(TEXT("Cache: — MB")));
-			CacheSizeText->SetColorAndOpacity(FSlateColor(FLinearColor(0.75f, 0.75f, 0.75f)));
-			VBox->AddChildToVerticalBox(CacheSizeText);
-
-			UHorizontalBox* CacheRow = WidgetTree->ConstructWidget<UHorizontalBox>();
-
-			auto MakeCacheBtn = [&](const FString& Lbl, TObjectPtr<UButton>& OutBtn)
-			{
-				OutBtn = WidgetTree->ConstructWidget<UButton>();
-				UTextBlock* T = WidgetTree->ConstructWidget<UTextBlock>();
-				T->SetText(FText::FromString(Lbl));
-				T->SetColorAndOpacity(FSlateColor(FLinearColor::White));
-				OutBtn->SetContent(T);
-				if (UHorizontalBoxSlot* BS = CacheRow->AddChildToHorizontalBox(OutBtn))
-				{
-					BS->SetPadding(FMargin(0, 0, 4, 0));
-				}
-			};
-
-			MakeCacheBtn(TEXT("Clear this file"), ClearThisBtn);
-			MakeCacheBtn(TEXT("Clear all"),       ClearAllBtn);
-			VBox->AddChildToVerticalBox(CacheRow);
-
-			ClearThisBtn->OnClicked.AddDynamic(this, &UPFConvertPanel::OnClearThisClicked);
-			ClearAllBtn ->OnClicked.AddDynamic(this, &UPFConvertPanel::OnClearAllClicked);
-		}
-
-		// --- Status text ---
-		StatusText = WidgetTree->ConstructWidget<UTextBlock>();
-		StatusText->SetText(FText::FromString(TEXT("")));
-		StatusText->SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.85f, 0.3f)));
-		VBox->AddChildToVerticalBox(StatusText);
-
-		// Wire delegates
-		BrowseBtn->OnClicked.AddDynamic(this, &UPFConvertPanel::OnBrowseClicked);
-		SpacingSpin->OnValueChanged.AddDynamic(this, &UPFConvertPanel::OnSpacingChanged);
-		LeafSpin->OnValueChanged.AddDynamic(this, &UPFConvertPanel::OnLeafChanged);
-		MaxDepthSpin->OnValueChanged.AddDynamic(this, &UPFConvertPanel::OnMaxDepthChanged);
-		ChunkSpin->OnValueChanged.AddDynamic(this, &UPFConvertPanel::OnChunkDepthChanged);
-		FlushSpin->OnValueChanged.AddDynamic(this, &UPFConvertPanel::OnFlushChanged);
-		KeepChunksCheck->OnCheckStateChanged.AddDynamic(this, &UPFConvertPanel::OnKeepChunksChanged);
-		VerboseCheck->OnCheckStateChanged.AddDynamic(this, &UPFConvertPanel::OnVerboseChanged);
-		CompressCheck->OnCheckStateChanged.AddDynamic(this, &UPFConvertPanel::OnCompressChanged);
-		ConvertBtn->OnClicked.AddDynamic(this, &UPFConvertPanel::OnConvertClicked);
-		CancelBtn->OnClicked.AddDynamic(this, &UPFConvertPanel::OnCancelClicked);
-		CancelBtn->SetVisibility(ESlateVisibility::Collapsed);
-		SaveBtn->OnClicked.AddDynamic(this, &UPFConvertPanel::OnSaveClicked);
-		ResetBtn->OnClicked.AddDynamic(this, &UPFConvertPanel::OnResetClicked);
-	}
-
-	return Super::RebuildWidget();
-}
-
 void UPFConvertPanel::NativeConstruct()
 {
 	Super::NativeConstruct();
-	// NativeConstruct fires after RebuildWidget; all widgets exist by now.
-	// BindWidget panels used to wire delegates here; RebuildWidget already wired them.
+
+	if (BrowseBtn) BrowseBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnBrowseClicked);
+	if (SpacingSpin) SpacingSpin->OnValueChanged.AddUniqueDynamic(this, &UPFConvertPanel::OnSpacingChanged);
+	if (LeafSpin) LeafSpin->OnValueChanged.AddUniqueDynamic(this, &UPFConvertPanel::OnLeafChanged);
+	if (MaxDepthSpin) MaxDepthSpin->OnValueChanged.AddUniqueDynamic(this, &UPFConvertPanel::OnMaxDepthChanged);
+	if (ChunkSpin) ChunkSpin->OnValueChanged.AddUniqueDynamic(this, &UPFConvertPanel::OnChunkDepthChanged);
+	if (FlushSpin) FlushSpin->OnValueChanged.AddUniqueDynamic(this, &UPFConvertPanel::OnFlushChanged);
+	if (KeepChunksCheck) KeepChunksCheck->OnCheckStateChanged.AddUniqueDynamic(this, &UPFConvertPanel::OnKeepChunksChanged);
+	if (VerboseCheck) VerboseCheck->OnCheckStateChanged.AddUniqueDynamic(this, &UPFConvertPanel::OnVerboseChanged);
+	if (ConvertBtn) ConvertBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnConvertClicked);
+	if (CancelBtn)
+	{
+		CancelBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnCancelClicked);
+		CancelBtn->SetVisibility(ESlateVisibility::Collapsed);
+	}
+	if (SaveBtn) SaveBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnSaveClicked);
+	if (ResetBtn) ResetBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnResetClicked);
+	if (PresetHQBtn) PresetHQBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnPresetHighQuality);
+	if (PresetMedBtn) PresetMedBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnPresetMedium);
+	if (PresetLowBtn) PresetLowBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnPresetLow);
+	if (PresetFastBtn) PresetFastBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnPresetFast);
+	if (PresetSlowBtn) PresetSlowBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnPresetSlow);
+	if (ClearThisBtn) ClearThisBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnClearThisClicked);
+	if (ClearAllBtn) ClearAllBtn->OnClicked.AddUniqueDynamic(this, &UPFConvertPanel::OnClearAllClicked);
+
+	// Add text blocks to newly injected empty buttons dynamically
+	auto AddTextToButton = [this](UButton* Btn, const FString& TextStr)
+	{
+		if (Btn && Btn->GetContent() == nullptr && WidgetTree)
+		{
+			UTextBlock* Txt = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), NAME_None);
+			if (Txt)
+			{
+				Txt->SetText(FText::FromString(TextStr));
+				Txt->SetColorAndOpacity(FSlateColor(FLinearColor::Black));
+				Btn->SetContent(Txt);
+			}
+		}
+	};
+
+	AddTextToButton(BrowseBtn, TEXT("Browse..."));
+	AddTextToButton(PresetHQBtn, TEXT("High Qual"));
+	AddTextToButton(PresetMedBtn, TEXT("Medium"));
+	AddTextToButton(PresetLowBtn, TEXT("Low"));
+	AddTextToButton(PresetFastBtn, TEXT("Fast"));
+	AddTextToButton(PresetSlowBtn, TEXT("Slow"));
+	AddTextToButton(ClearThisBtn, TEXT("Clear this file"));
+	AddTextToButton(ClearAllBtn, TEXT("Clear all"));
+
 	RefreshFromSettings();
 	RefreshConvertUi();
+
+	// Create progress bar + verbose log widgets if not already bound from the WBP designer.
+	// They are injected into the same parent panel as StatusText.
+	if (WidgetTree)
+	{
+		UPanelWidget* Host = StatusText ? Cast<UPanelWidget>(StatusText->GetParent()) : nullptr;
+		if (!Host) Host = Cast<UPanelWidget>(WidgetTree->RootWidget);
+
+		if (Host && !ConvertProgressBar)
+		{
+			ConvertProgressBar = WidgetTree->ConstructWidget<UProgressBar>(
+				UProgressBar::StaticClass(), FName("ConvertProgressBar"));
+			if (ConvertProgressBar)
+			{
+				ConvertProgressBar->SetPercent(0.f);
+				ConvertProgressBar->SetVisibility(ESlateVisibility::Collapsed);
+				Host->AddChild(ConvertProgressBar);
+				if (UVerticalBoxSlot* VBSlot = Cast<UVerticalBoxSlot>(ConvertProgressBar->Slot))
+					VBSlot->SetPadding(FMargin(0.f, 4.f, 0.f, 0.f));
+			}
+		}
+
+		if (Host && !LogScroll)
+		{
+			LogSizeBox     = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(),       FName("LogSizeBox"));
+			LogScroll      = WidgetTree->ConstructWidget<UScrollBox>(UScrollBox::StaticClass(),   FName("LogScroll"));
+			VerboseLogText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(),   FName("VerboseLogText"));
+
+			if (VerboseLogText)
+			{
+				VerboseLogText->SetAutoWrapText(true);
+				FSlateFontInfo Font = VerboseLogText->GetFont();
+				Font.Size = 8;
+				VerboseLogText->SetFont(Font);
+				VerboseLogText->SetColorAndOpacity(FSlateColor(FLinearColor(0.55f, 1.0f, 0.55f)));
+			}
+			if (LogScroll && VerboseLogText)
+				LogScroll->AddChild(VerboseLogText);
+
+			if (LogSizeBox && LogScroll)
+			{
+				LogSizeBox->SetMaxDesiredHeight(180.f);
+				LogSizeBox->AddChild(LogScroll);
+				LogSizeBox->SetVisibility(ESlateVisibility::Collapsed);
+				Host->AddChild(LogSizeBox);
+				if (UVerticalBoxSlot* VBSlot = Cast<UVerticalBoxSlot>(LogSizeBox->Slot))
+					VBSlot->SetPadding(FMargin(0.f, 4.f, 0.f, 0.f));
+			}
+			else if (LogScroll)
+			{
+				LogScroll->SetVisibility(ESlateVisibility::Collapsed);
+				Host->AddChild(LogScroll);
+			}
+		}
+	}
 }
 
 void UPFConvertPanel::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
@@ -235,7 +156,6 @@ void UPFConvertPanel::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 	Super::NativeTick(MyGeometry, InDeltaTime);
 	RefreshConvertUi();
 
-	// Refresh cache size label every ~2 seconds (avoid per-frame disk stat).
 	CacheLabelTimer += InDeltaTime;
 	if (CacheLabelTimer >= 2.0f)
 	{
@@ -262,18 +182,87 @@ void UPFConvertPanel::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 void UPFConvertPanel::RefreshConvertUi()
 {
 	APFPointCloudActor* Actor = Target.Get();
-	if (!Actor)
+	if (!Actor) return;
+
+	const EPFConvertState St      = Actor->GetConvertState();
+	const FString         Status  = Actor->GetConvertStatus();
+	const bool            bRunning = (St == EPFConvertState::Running);
+	const bool            bActive  = (St != EPFConvertState::Idle);
+	const bool            bVerbose = VerboseCheck && VerboseCheck->IsChecked();
+
+	// --- Button state (always update) ---
+	if (CancelBtn)  CancelBtn->SetVisibility(bRunning ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	if (ConvertBtn) ConvertBtn->SetIsEnabled(!bRunning);
+
+	if (!bActive) return;
+
+	// --- Progress bar ---
+	if (ConvertProgressBar)
 	{
-		return;
+		if (bRunning)
+		{
+			float Prog = 0.f;
+			if (Actor->CurrentConvert.IsValid())
+				Prog = Actor->CurrentConvert->Progress.load();
+			ConvertProgressBar->SetPercent(Prog);
+			ConvertProgressBar->SetVisibility(ESlateVisibility::Visible);
+		}
+		else if (St == EPFConvertState::Done)
+		{
+			ConvertProgressBar->SetPercent(1.f);
+			ConvertProgressBar->SetVisibility(ESlateVisibility::Visible);
+		}
+		else
+		{
+			// Failed / Cancelled — hide bar
+			ConvertProgressBar->SetVisibility(ESlateVisibility::Collapsed);
+		}
 	}
 
-	const EPFConvertState St = Actor->GetConvertState();
-	const FString Status = Actor->GetConvertStatus();
-	const bool bRunning = (St == EPFConvertState::Running);
+	// Helper: the outer container for the verbose log (SizeBox wrapper if present, else ScrollBox)
+	UWidget* LogContainer = LogSizeBox ? static_cast<UWidget*>(LogSizeBox.Get())
+	                                   : static_cast<UWidget*>(LogScroll.Get());
 
-	// Status text — show phase while running; result line afterwards.
-	if (StatusText)
+	// --- Verbose log vs simple status ---
+	if (bVerbose)
 	{
+		if (StatusText)    StatusText->SetVisibility(ESlateVisibility::Collapsed);
+		if (LogContainer)  LogContainer->SetVisibility(ESlateVisibility::Visible);
+
+		if (VerboseLogText && Actor->CurrentConvert.IsValid())
+		{
+			const TArray<FString> Lines = Actor->CurrentConvert->GetLogLines();
+			if (Lines.Num() != LastLogLineCount)
+			{
+				LastLogLineCount = Lines.Num();
+
+				FString AllText;
+				AllText.Reserve(Lines.Num() * 80);
+				for (const FString& Line : Lines)
+				{
+					AllText += Line;
+					AllText += TEXT("\n");
+				}
+				// Terminal state suffix
+				switch (St)
+				{
+				case EPFConvertState::Done:      AllText += TEXT(">>> Done."); break;
+				case EPFConvertState::Failed:    AllText += FString::Printf(TEXT(">>> Failed: %s"), *Status); break;
+				case EPFConvertState::Cancelled: AllText += TEXT(">>> Cancelled."); break;
+				default: break;
+				}
+
+				VerboseLogText->SetText(FText::FromString(AllText));
+				if (LogScroll) LogScroll->ScrollToEnd();
+			}
+		}
+	}
+	else
+	{
+		// Simple one-line status
+		if (LogContainer) LogContainer->SetVisibility(ESlateVisibility::Collapsed);
+		if (StatusText)   StatusText->SetVisibility(ESlateVisibility::Visible);
+
 		FString Line;
 		switch (St)
 		{
@@ -281,20 +270,9 @@ void UPFConvertPanel::RefreshConvertUi()
 		case EPFConvertState::Done:      Line = TEXT("Done."); break;
 		case EPFConvertState::Failed:    Line = FString::Printf(TEXT("Failed: %s"), *Status); break;
 		case EPFConvertState::Cancelled: Line = TEXT("Cancelled."); break;
-		case EPFConvertState::Idle:      default: /* leave whatever was last set */ return;
+		default: return;
 		}
 		StatusText->SetText(FText::FromString(Line));
-	}
-
-	// Cancel button visibility — running only.
-	if (CancelBtn)
-	{
-		CancelBtn->SetVisibility(bRunning ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
-	}
-	// Convert button disabled while one is in flight (avoids double-launching).
-	if (ConvertBtn)
-	{
-		ConvertBtn->SetIsEnabled(!bRunning);
 	}
 }
 
@@ -302,9 +280,6 @@ void UPFConvertPanel::RefreshFromSettings()
 {
 	const UPFConvertSettings* S = UPFConvertSettings::Get();
 
-	// Configure spin-box ranges so SetValue() below doesn't clamp to whatever
-	// the WBP designer left. These match the ClampMin/ClampMax meta tags in
-	// UPFConvertSettings (the source of truth for valid input).
 	auto cfg = [](USpinBox* Sb, float Mn, float Mx, float Delta, int32 FracDigits)
 	{
 		if (!Sb) return;
@@ -316,21 +291,20 @@ void UPFConvertPanel::RefreshFromSettings()
 		Sb->SetMinFractionalDigits(FracDigits);
 		Sb->SetMaxFractionalDigits(FracDigits);
 	};
-	cfg(SpacingSpin,  0.0f,     100.0f,       0.001f, 4); // metres, 0 = auto
-	cfg(LeafSpin,     1000.0f,  2'000'000.0f, 1000.0f, 0);
-	cfg(MaxDepthSpin, 1.0f,     30.0f,        1.0f,    0);
-	cfg(ChunkSpin,    0.0f,     10.0f,        1.0f,    0);
-	cfg(FlushSpin,    1'000'000.0f, 268'435'456.0f, 1'000'000.0f, 0);
+	cfg(SpacingSpin,  0.0f,          100.0f,          0.001f, 4);
+	cfg(LeafSpin,     1000.0f,        2'000'000.0f,   1000.0f, 0);
+	cfg(MaxDepthSpin, 1.0f,           30.0f,            1.0f,  0);
+	cfg(ChunkSpin,    0.0f,           10.0f,            1.0f,  0);
+	cfg(FlushSpin,    1'000'000.0f,   268'435'456.0f, 1'000'000.0f, 0);
 
-	if (SpacingSpin)  { SpacingSpin->SetValue(S->Spacing); }
-	if (LeafSpin)     { LeafSpin->SetValue(static_cast<float>(S->LeafSize)); }
-	if (MaxDepthSpin) { MaxDepthSpin->SetValue(static_cast<float>(S->MaxDepth)); }
-	if (ChunkSpin)    { ChunkSpin->SetValue(static_cast<float>(S->ChunkDepth)); }
-	if (FlushSpin)    { FlushSpin->SetValue(static_cast<float>(S->FlushBudget)); }
+	if (SpacingSpin)     { SpacingSpin->SetValue(S->Spacing); }
+	if (LeafSpin)        { LeafSpin->SetValue(static_cast<float>(S->LeafSize)); }
+	if (MaxDepthSpin)    { MaxDepthSpin->SetValue(static_cast<float>(S->MaxDepth)); }
+	if (ChunkSpin)       { ChunkSpin->SetValue(static_cast<float>(S->ChunkDepth)); }
+	if (FlushSpin)       { FlushSpin->SetValue(static_cast<float>(S->FlushBudget)); }
 	if (KeepChunksCheck) { KeepChunksCheck->SetIsChecked(S->bKeepChunks); }
 	if (VerboseCheck)    { VerboseCheck->SetIsChecked(S->bVerbose); }
-
-	// Pre-fill source path with last used file (if any) + hint for empty case.
+	
 	if (PathBox)
 	{
 		if (PathBox->GetText().IsEmpty() && !S->LastSourceFile.IsEmpty())
@@ -341,50 +315,79 @@ void UPFConvertPanel::RefreshFromSettings()
 	}
 }
 
-void UPFConvertPanel::OnSpacingChanged(float V)   { UPFConvertSettings* S = UPFConvertSettings::Get(); S->Spacing = V; S->SaveSettings(); }
-void UPFConvertPanel::OnLeafChanged(float V)      { UPFConvertSettings* S = UPFConvertSettings::Get(); S->LeafSize = FMath::RoundToInt(V); S->SaveSettings(); }
-void UPFConvertPanel::OnMaxDepthChanged(float V)  { UPFConvertSettings* S = UPFConvertSettings::Get(); S->MaxDepth = FMath::RoundToInt(V); S->SaveSettings(); }
-void UPFConvertPanel::OnChunkDepthChanged(float V){ UPFConvertSettings* S = UPFConvertSettings::Get(); S->ChunkDepth = FMath::RoundToInt(V); S->SaveSettings(); }
-void UPFConvertPanel::OnFlushChanged(float V)     { UPFConvertSettings* S = UPFConvertSettings::Get(); S->FlushBudget = static_cast<int64>(V); S->SaveSettings(); }
-void UPFConvertPanel::OnKeepChunksChanged(bool b) { UPFConvertSettings* S = UPFConvertSettings::Get(); S->bKeepChunks = b; S->SaveSettings(); }
-void UPFConvertPanel::OnVerboseChanged(bool b)    { UPFConvertSettings* S = UPFConvertSettings::Get(); S->bVerbose = b; S->SaveSettings(); }
-void UPFConvertPanel::OnCompressChanged(bool b)   { UPFConvertSettings* S = UPFConvertSettings::Get(); S->bCompress = b; S->SaveSettings(); }
+void UPFConvertPanel::ApplyPreset(float Spacing, int32 Leaf, int32 Depth, int32 Chunk, int64 Flush)
+{
+	UPFConvertSettings* S = UPFConvertSettings::Get();
+	S->Spacing     = Spacing;
+	S->LeafSize    = Leaf;
+	S->MaxDepth    = Depth;
+	S->ChunkDepth  = Chunk;
+	S->FlushBudget = Flush;
+	S->SaveSettings();
+	RefreshFromSettings();
+	if (StatusText) { StatusText->SetText(FText::FromString(TEXT("Preset applied."))); }
+}
+
+//                    Spacing  Leaf    Depth  Chunk  Flush (pts)      Compress
+void UPFConvertPanel::OnPresetHighQuality() { ApplyPreset(0.f, 100000, 28, 4,  67108864LL);  } // 64 M pts RAM
+void UPFConvertPanel::OnPresetMedium()      { ApplyPreset(0.f,  50000, 24, 4,  16777216LL);  } // 16 M — default
+void UPFConvertPanel::OnPresetLow()         { ApplyPreset(0.f,  20000, 18, 3,   8388608LL); } //  8 M, shallow
+void UPFConvertPanel::OnPresetFast()        { ApplyPreset(0.f,  20000, 14, 3,   8388608LL); } // shallow + no compress
+void UPFConvertPanel::OnPresetSlow()        { ApplyPreset(0.f, 100000, 30, 5, 134217728LL);  } // 128 M, max depth
+
+void UPFConvertPanel::OnSpacingChanged(float V)    { UPFConvertSettings* S = UPFConvertSettings::Get(); S->Spacing    = V;                          S->SaveSettings(); }
+void UPFConvertPanel::OnLeafChanged(float V)       { UPFConvertSettings* S = UPFConvertSettings::Get(); S->LeafSize   = FMath::RoundToInt(V);        S->SaveSettings(); }
+void UPFConvertPanel::OnMaxDepthChanged(float V)   { UPFConvertSettings* S = UPFConvertSettings::Get(); S->MaxDepth   = FMath::RoundToInt(V);        S->SaveSettings(); }
+void UPFConvertPanel::OnChunkDepthChanged(float V) { UPFConvertSettings* S = UPFConvertSettings::Get(); S->ChunkDepth = FMath::RoundToInt(V);        S->SaveSettings(); }
+void UPFConvertPanel::OnFlushChanged(float V)      { UPFConvertSettings* S = UPFConvertSettings::Get(); S->FlushBudget = static_cast<int64>(V);      S->SaveSettings(); }
+void UPFConvertPanel::OnKeepChunksChanged(bool b)  { UPFConvertSettings* S = UPFConvertSettings::Get(); S->bKeepChunks = b;                          S->SaveSettings(); }
+void UPFConvertPanel::OnVerboseChanged(bool b)     { UPFConvertSettings* S = UPFConvertSettings::Get(); S->bVerbose    = b;                          S->SaveSettings(); }
 
 void UPFConvertPanel::OnBrowseClicked()
 {
-#if WITH_EDITOR
-	IDesktopPlatform* DP = FDesktopPlatformModule::Get();
-	if (!DP) { return; }
-
-	TArray<FString> OutFiles;
-	const FString DefaultPath = TEXT("");
-	const bool bOpened = DP->OpenFileDialog(
-		FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
-		TEXT("Select Point Cloud File"),
-		DefaultPath,
-		TEXT(""),
-		TEXT("Point Cloud Files (*.laz;*.las;*.ply;*.e57;*.pts;*.xyz)|*.laz;*.las;*.ply;*.e57;*.pts;*.xyz|All Files (*.*)|*.*"),
-		EFileDialogFlags::None,
-		OutFiles);
-
-	if (bOpened && OutFiles.Num() > 0)
+#if PLATFORM_WINDOWS
+	HWND ParentHwnd = nullptr;
+	if (FSlateApplication::IsInitialized())
 	{
-		const FString& Picked = OutFiles[0];
-		if (PathBox)
-		{
-			PathBox->SetText(FText::FromString(Picked));
-		}
-		// Persist so next open pre-fills the path.
+		TSharedPtr<SWindow> TopWindow = FSlateApplication::Get().GetActiveTopLevelWindow();
+		if (TopWindow.IsValid() && TopWindow->GetNativeWindow().IsValid())
+			ParentHwnd = static_cast<HWND>(TopWindow->GetNativeWindow()->GetOSWindowHandle());
+	}
+
+	wchar_t szFile[MAX_PATH] = { 0 };
+	OPENFILENAMEW ofn       = {};
+	ofn.lStructSize         = sizeof(ofn);
+	ofn.hwndOwner           = ParentHwnd;
+	ofn.lpstrFile           = szFile;
+	ofn.nMaxFile            = MAX_PATH;
+	ofn.lpstrFilter         = L"Point Cloud Files\0*.laz;*.las;*.ply;*.e57;*.pts;*.xyz\0All Files\0*.*\0";
+	ofn.Flags               = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+
+	// Load comdlg32 dynamically — avoids needing comdlg32.lib in Build.cs
+	typedef BOOL(WINAPI* FnGetOpenFileName)(LPOPENFILENAMEW);
+	HMODULE hDll = LoadLibraryW(L"comdlg32.dll");
+	FnGetOpenFileName pfn = hDll ? (FnGetOpenFileName)GetProcAddress(hDll, "GetOpenFileNameW") : nullptr;
+	const bool bPicked = pfn && pfn(&ofn);
+	if (hDll) FreeLibrary(hDll);
+
+	if (bPicked)
+	{
+		const FString Picked = FString(szFile);
+		if (PathBox) { PathBox->SetText(FText::FromString(Picked)); }
 		UPFConvertSettings* S = UPFConvertSettings::Get();
 		S->LastSourceFile = Picked;
 		S->SaveSettings();
 	}
 #else
 	if (StatusText)
-	{
-		StatusText->SetText(FText::FromString(TEXT("File browser only available in Editor builds.")));
-	}
+		StatusText->SetText(FText::FromString(TEXT("Browse unavailable on this platform — type the path.")));
 #endif
+}
+
+void UPFConvertPanel::SetStatusText(const FString& text)
+{
+	if (StatusText)
+		StatusText->SetText(FText::FromString(text));
 }
 
 void UPFConvertPanel::OnSaveClicked()
@@ -410,13 +413,20 @@ void UPFConvertPanel::OnConvertClicked()
 	}
 	if (APFPointCloudActor* Actor = Target.Get())
 	{
-		// Remember the path so subsequent panel opens pre-fill it.
+		// Reset verbose log for new convert
+		LastLogLineCount = 0;
+		if (VerboseLogText) VerboseLogText->SetText(FText::GetEmpty());
+		UWidget* LogContainer = LogSizeBox ? static_cast<UWidget*>(LogSizeBox.Get())
+		                                   : static_cast<UWidget*>(LogScroll.Get());
+		if (LogContainer) LogContainer->SetVisibility(ESlateVisibility::Collapsed);
+		if (ConvertProgressBar) ConvertProgressBar->SetPercent(0.f);
+
 		UPFConvertSettings* S = UPFConvertSettings::Get();
 		S->LastSourceFile = Path;
 		S->SaveSettings();
 
 		Actor->LoadPointCloudFile(Path);
-		RefreshConvertUi();   // pick up Running state immediately
+		RefreshConvertUi();
 	}
 	else if (StatusText)
 	{
@@ -447,7 +457,7 @@ void UPFConvertPanel::OnClearThisClicked()
 		{
 			StatusText->SetText(FText::FromString(bOk ? TEXT("Cache cleared for this file.") : TEXT("No cache found for this file.")));
 		}
-		CacheLabelTimer = 2.f; // force refresh next tick
+		CacheLabelTimer = 2.f;
 	}
 }
 
@@ -466,6 +476,6 @@ void UPFConvertPanel::OnClearAllClicked()
 		{
 			StatusText->SetText(FText::FromString(FString::Printf(TEXT("Cleared %d cache(s)."), Cleared)));
 		}
-		CacheLabelTimer = 2.f; // force refresh next tick
+		CacheLabelTimer = 2.f;
 	}
 }

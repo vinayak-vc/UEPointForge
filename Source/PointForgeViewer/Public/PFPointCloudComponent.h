@@ -84,6 +84,8 @@ public:
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials) const override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	// Flush pending render commands before the proxy is freed (PIE end, level unload).
+	virtual void OnUnregister() override;
 
 	/** Snapshot of live streaming stats for the viewer panel. */
 	UFUNCTION(BlueprintCallable, Category = "PointForge")

@@ -10,6 +10,7 @@
 #include "SceneView.h"
 #include "ConvexVolume.h"
 #include "PrimitiveUniformShaderParametersBuilder.h"
+#include "RenderingThread.h"   // ENQUEUE_RENDER_COMMAND (deferred node release)
 
 // GPU footprint per source point: 4 verts (FStaticMeshVertexBuffers ~28 B each:
 // position 12 + tangents 8 + UV 4 + color 4) + 6 index entries (4 B each).
@@ -36,6 +37,22 @@ FPFPointCloudSceneProxy::FPFPointCloudSceneProxy(const UPFPointCloudComponent* I
 	bWillEverBeLit = false;
 	bVerifyUsedMaterials = false;
 
+	// ROOT FIX: opt out of parallel GatherDynamicMeshElements. This proxy streams
+	// per-node GPU resources (CreateNode init, EvictToBudget release) from inside
+	// GetDynamicMeshElements. UE5.5 runs GDME on parallel worker tasks
+	// (ETaskTag::EParallelRenderingThread) by default, where IsInRenderingThread()
+	// is false: resource init becomes DEFERRED and resource lifetime races the real
+	// render thread. That broke the proxy's synchronous-execution assumption and
+	// produced a moving target of render-thread access violations (freed-VF vtable
+	// call, then null stream-buffer RHI at +0x28, then a null deref at 0x0) — all on
+	// the same parallel-GDME draw path. Forcing GDME onto the actual render thread
+	// makes InitFromDynamicVertex run inline (buffers + VF fully ready on return) and
+	// ReleaseResource synchronous, restoring the contract this code depends on.
+	// Cost: this single proxy's GDME no longer parallelises — negligible for one
+	// point-cloud primitive. The deferred-eviction and stream-readiness guards below
+	// remain as defence in depth.
+	bSupportsParallelGDME = false;
+
 	Store = InComponent ? InComponent->Store : nullptr;
 	Stats = InComponent ? InComponent->Stats : nullptr;
 	UnitScale = InComponent ? InComponent->UnitScale : 100.f;
@@ -45,12 +62,13 @@ FPFPointCloudSceneProxy::FPFPointCloudSceneProxy(const UPFPointCloudComponent* I
 	UploadsPerFrame = InComponent ? InComponent->UploadsPerFrame : 32;
 	PointCountLimit = InComponent ? InComponent->PointCountLimit : 0.0f;
 
-	Material = InComponent ? InComponent->PointMaterial : nullptr;
-	if (!Material)
+	UMaterialInterface* Mat = InComponent ? InComponent->PointMaterial : nullptr;
+	if (!Mat)
 	{
-		Material = UMaterial::GetDefaultMaterial(MD_Surface);
+		Mat = UMaterial::GetDefaultMaterial(MD_Surface);
 	}
-	MaterialRelevance = Material->GetRelevance_Concurrent(GetScene().GetFeatureLevel());
+	MaterialRenderProxy = Mat->GetRenderProxy();
+	MaterialRelevance = Mat->GetRelevance_Concurrent(GetScene().GetFeatureLevel());
 }
 
 FPFPointCloudSceneProxy::~FPFPointCloudSceneProxy()
@@ -67,6 +85,13 @@ FPFPointCloudSceneProxy::~FPFPointCloudSceneProxy()
 
 void FPFPointCloudSceneProxy::SetTunables_RenderThread(float InSseBudgetPx, int64 InGpuBudgetBytes, int32 InUploadsPerFrame, float InPointCountLimit)
 {
+	// This must only run on the render thread. If it fires on another thread,
+	// that means TickComponent enqueued the command against a proxy that was
+	// already freed — the OnUnregister flush should prevent this.
+	if (!ensureMsgf(IsInRenderingThread(), TEXT("PFPointCloud: SetTunables_RenderThread called off render thread — stale render command?")))
+	{
+		return;
+	}
 	SseBudgetPx = InSseBudgetPx;
 	GpuBudgetBytes = InGpuBudgetBytes;
 	UploadsPerFrame = InUploadsPerFrame;
@@ -77,6 +102,11 @@ void FPFPointCloudSceneProxy::CreateNode(FPFLoadResult& Load) const
 {
 	const int32 Idx = Load.NodeIndex;
 	if (Resident.Contains(Idx))
+	{
+		return;
+	}
+	if (!ensureMsgf(IsInParallelRenderingThread() || IsInRenderingThread(),
+		TEXT("PFProxy::CreateNode called off render thread (node %d)"), Idx))
 	{
 		return;
 	}
@@ -147,8 +177,8 @@ void FPFPointCloudSceneProxy::EvictToBudget(uint32 FrameNumber) const
 		{
 			break;
 		}
-		TUniquePtr<FPFNodeRender>& Node = Resident[Key];
-		if (!Node || Node->LastUsedFrame == FrameNumber)
+		TUniquePtr<FPFNodeRender>* NodePtr = Resident.Find(Key);
+		if (!NodePtr || !*NodePtr || (*NodePtr)->LastUsedFrame == FrameNumber)
 		{
 			continue;
 		}
@@ -156,14 +186,32 @@ void FPFPointCloudSceneProxy::EvictToBudget(uint32 FrameNumber) const
 		{
 			continue;   // root is precious — keep resident
 		}
+		FPFNodeRender* Node = NodePtr->Get();
 		ResidentBytesTotal -= Node->Bytes;
 		PointsOnGpuTotal -= Node->NumPoints;
-		Node->ReleaseResources();
+
+		// CRITICAL: GetDynamicMeshElements (and therefore this eviction) runs on a
+		// PARALLEL rendering worker (ETaskTag::EParallelRenderingThread), where
+		// IsInRenderingThread() is FALSE. CreateNode's BeginInitResource / SetData
+		// therefore ENQUEUE their InitCommand lambdas (which capture &Node->VertexFactory
+		// and the buffers) to run LATER on the actual render thread. Destroying the
+		// FPFNodeRender inline here would free that FLocalVertexFactory before the queued
+		// InitCommand runs -> InitRHI() dispatched through a freed vtable -> wild-pointer
+		// crash (EXCEPTION_ACCESS_VIOLATION at a garbage code address). So detach the node
+		// and defer ReleaseResources() + C++ destruction to the render thread: enqueued
+		// from this same worker, the delete lands on the same pipe AFTER the InitCommands.
+		TUniquePtr<FPFNodeRender> Dead = MoveTemp(*NodePtr);
 		Resident.Remove(Key);
 		if (Store.IsValid())
 		{
 			Store->MarkEvicted(Key);
 		}
+		ENQUEUE_RENDER_COMMAND(PFEvictNode)(
+			[Dead = MoveTemp(Dead)](FRHICommandListImmediate&) mutable
+			{
+				Dead->ReleaseResources();
+				Dead.Reset();
+			});
 	}
 }
 
@@ -200,8 +248,15 @@ void FPFPointCloudSceneProxy::GetDynamicMeshElements(
 	uint32 VisibilityMap,
 	FMeshElementCollector& Collector) const
 {
-	if (!Store.IsValid() || !Store->IsValid() || Material == nullptr)
+	if (!Store.IsValid() || !Store->IsValid())
 	{
+		UE_LOG(LogPointForge, Error, TEXT("PFProxy::GetDynamicMeshElements — store invalid (proxy=%p store=%p)"),
+			this, Store.Get());
+		return;
+	}
+	if (MaterialRenderProxy == nullptr)
+	{
+		UE_LOG(LogPointForge, Error, TEXT("PFProxy::GetDynamicMeshElements — null MaterialRenderProxy (proxy=%p)"), this);
 		return;
 	}
 
@@ -212,7 +267,7 @@ void FPFPointCloudSceneProxy::GetDynamicMeshElements(
 		ProcessFrame(Collector, FrameNumber);
 	}
 
-	FMaterialRenderProxy* MaterialProxy = Material->GetRenderProxy();
+	FMaterialRenderProxy* MaterialProxy = MaterialRenderProxy;
 	const FMatrix& LocalToWorldMatrix = GetLocalToWorld();
 	const FVector WorldScale = LocalToWorldMatrix.GetScaleVector();
 	const double Scale = FMath::Max3(FMath::Abs(WorldScale.X), FMath::Abs(WorldScale.Y), FMath::Abs(WorldScale.Z));
@@ -272,8 +327,20 @@ void FPFPointCloudSceneProxy::GetDynamicMeshElements(
 			if (const TUniquePtr<FPFNodeRender>* Found = Resident.Find(Idx))
 			{
 				FPFNodeRender* Node = Found->Get();
+				// Readiness gate. VertexFactory.IsInitialized() alone is NOT sufficient:
+				// CreateNode runs on a parallel GDME worker (IsInRenderingThread()==false),
+				// so InitFromDynamicVertex's buffer-init + stream-bind lambda is DEFERRED to
+				// the render thread. There is a window where the VF object exists but its bound
+				// vertex-buffer RHIs are still null. Drawing then makes the engine read a null
+				// stream buffer (EXCEPTION_ACCESS_VIOLATION reading 0x28). Require the actual
+				// stream RHIs to be live before emitting a batch; an unready node simply isn't
+				// drawn this frame (same as a not-yet-initialised one) and is retried next frame.
+				const bool bStreamsReady = Node
+					&& Node->Buffers.PositionVertexBuffer.VertexBufferRHI.IsValid()
+					&& Node->Buffers.StaticMeshVertexBuffer.IsValid()
+					&& Node->Buffers.ColorVertexBuffer.VertexBufferRHI.IsValid();
 				if (Node && Node->NumPoints > 0 && Node->VertexFactory.IsInitialized()
-					&& Node->IndexBuffer.IndexBufferRHI.IsValid())
+					&& Node->IndexBuffer.IndexBufferRHI.IsValid() && bStreamsReady)
 				{
 					Node->LastUsedFrame = FrameNumber;
 

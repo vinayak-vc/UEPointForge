@@ -47,6 +47,11 @@ bool UPFPointCloudComponent::OpenOctreeDir(const FString& OctreeDir)
 		}
 	}
 
+	// Drain all pending render commands (including any in-flight PFSetTunables
+	// that captured the old SceneProxy pointer) before scheduling proxy deletion.
+	// Without this, TickComponent's render command can race the old-proxy delete.
+	FlushRenderingCommands();
+
 	MarkRenderStateDirty(); // recreate the scene proxy (reads PointMaterial)
 	UpdateBounds();
 	return true;
@@ -62,7 +67,9 @@ void UPFPointCloudComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 		: FMath::Lerp(SmoothedDeltaSeconds, DeltaTime, 0.1f);
 
 	// Push live tunables to the render-thread proxy.
-	if (SceneProxy)
+	// IsRenderStateCreated() is a safer gate than SceneProxy != nullptr alone:
+	// it is false during the window between MarkRenderStateDirty() and proxy recreation.
+	if (IsRenderStateCreated() && SceneProxy)
 	{
 		FPFPointCloudSceneProxy* Proxy = static_cast<FPFPointCloudSceneProxy*>(SceneProxy);
 		const float Sse = SseBudgetPixels;
@@ -139,8 +146,21 @@ FPFViewerStatsBP UPFPointCloudComponent::GetStats() const
 	return Out;
 }
 
+void UPFPointCloudComponent::OnUnregister()
+{
+	// Drain all queued render commands (including any PFSetTunables that captured
+	// the raw proxy pointer) before UE schedules the proxy for deletion.
+	// Without this, the render thread can execute a PFSetTunables command on a
+	// proxy that was already freed when PIE ends or the level is unloaded.
+	FlushRenderingCommands();
+	Super::OnUnregister();
+}
+
 void UPFPointCloudComponent::Close()
 {
+	// Flush BEFORE releasing the store so the render thread can finish any
+	// in-flight GetDynamicMeshElements that reads the store's node data.
+	FlushRenderingCommands();
 	Store.Reset();
 	MarkRenderStateDirty();
 	UpdateBounds();

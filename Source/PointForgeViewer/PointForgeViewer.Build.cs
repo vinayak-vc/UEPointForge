@@ -37,11 +37,11 @@ public class PointForgeViewer : ModuleRules
 			"DeveloperSettings", // UPFConvertSettings (persistent convert params)
 		});
 
-		// File-open dialog (editor only — not available in cooked/shipping builds).
-		if (Target.bBuildEditor)
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			PrivateDependencyModuleNames.Add("DesktopPlatform");
+			PublicSystemLibraries.Add("comdlg32.lib");
 		}
+
 		
 		string VcpkgDir = Path.Combine(PointForgeRoot, "build", "vcpkg_installed", "x64-windows");
 		string ZstdInc = Path.Combine(VcpkgDir, "include");
@@ -142,10 +142,8 @@ public class PointForgeViewer : ModuleRules
 			}
 			if (!string.IsNullOrEmpty(SrcPath))
 			{
-				string DestPath = Path.Combine(ThirdPartyDir, FileName);
-				// Two-arg form: UBT copies src → dest during staging regardless of
-				// whether dest already exists in the source tree.
-				RuntimeDependencies.Add(DestPath, SrcPath);
+					// $(PluginDir) resolves correctly in both editor and packaged builds.
+				RuntimeDependencies.Add("$(PluginDir)/Binaries/ThirdParty/" + FileName, SrcPath);
 				Console.WriteLine("PointForgeViewer: bundling " + FileName + " from " + SrcPath);
 			}
 			else

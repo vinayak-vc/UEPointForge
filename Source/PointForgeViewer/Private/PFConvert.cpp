@@ -16,6 +16,7 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogPointForgeConvert, Log, All);
 
+
 FString FPFConvert::GetCacheDirFor(const FString& SourceFile)
 {
 	IFileManager& FM = IFileManager::Get();
@@ -132,16 +133,34 @@ static void ParseConvertStatus(const FString& Chunk, FPFConvertHandle& Handle)
 {
 	if (Chunk.IsEmpty()) { return; }
 	FString Status;
+	float NewProg = -1.f;
 	const FString L = Chunk.ToLower();
-	if (L.Contains(TEXT("phase a")) || L.Contains(TEXT("counting"))) { Status = TEXT("Counting points"); }
-	else if (L.Contains(TEXT("phase b")) || L.Contains(TEXT("chunk")))    { Status = TEXT("Chunking"); }
-	else if (L.Contains(TEXT("phase c")) || L.Contains(TEXT("index")))    { Status = TEXT("Building octree"); }
-	else if (L.Contains(TEXT("writing meta")) || L.Contains(TEXT("meta.bin"))) { Status = TEXT("Writing metadata"); }
-	else if (L.Contains(TEXT("error"))) { Status = TEXT("Error — check log"); }
-	if (!Status.IsEmpty())
+	if      (L.Contains(TEXT("phase a")) || L.Contains(TEXT("counting")))         { Status = TEXT("Counting points");  NewProg = 0.10f; }
+	else if (L.Contains(TEXT("phase b")) || L.Contains(TEXT("chunk")))            { Status = TEXT("Chunking");         NewProg = 0.35f; }
+	else if (L.Contains(TEXT("phase c")) || L.Contains(TEXT("index")))            { Status = TEXT("Building octree");  NewProg = 0.60f; }
+	else if (L.Contains(TEXT("writing meta")) || L.Contains(TEXT("meta.bin")))    { Status = TEXT("Writing metadata"); NewProg = 0.90f; }
+	else if (L.Contains(TEXT("error")))                                            { Status = TEXT("Error — check log"); }
+
+	// Parse inline "N%" tokens emitted by some pfconvert builds
+	TArray<FString> Tokens;
+	Chunk.ParseIntoArray(Tokens, TEXT(" "), true);
+	for (const FString& Tok : Tokens)
 	{
-		Handle.SetStatus(Status);
+		if (Tok.EndsWith(TEXT("%")))
+		{
+			const FString Num = Tok.LeftChop(1);
+			if (Num.IsNumeric())
+			{
+				const float Pct = FCString::Atof(*Num) * 0.01f;
+				if (Pct >= 0.f && Pct <= 1.f)
+					NewProg = FMath::Max(NewProg, Pct);
+			}
+		}
 	}
+
+	if (!Status.IsEmpty()) Handle.SetStatus(Status);
+	// Never regress progress
+	if (NewProg >= 0.f) Handle.Progress.store(FMath::Max(Handle.Progress.load(), NewProg));
 }
 
 FPFConvertHandlePtr FPFConvert::ConvertAsync(const FString& SourceFile, const FString& PfConvertExe, FPFConvertDone OnDone)
@@ -235,6 +254,13 @@ FPFConvertHandlePtr FPFConvert::ConvertAsync(const FString& SourceFile, const FS
 						const FString Chunk = FPlatformProcess::ReadPipe(PipeRead);
 						if (!Chunk.IsEmpty())
 						{
+							TArray<FString> RawLines;
+							Chunk.ParseIntoArrayLines(RawLines, false);
+							for (const FString& RL : RawLines)
+							{
+								const FString Trimmed = RL.TrimStartAndEnd();
+								if (!Trimmed.IsEmpty()) Handle->AppendLog(Trimmed);
+							}
 							ParseConvertStatus(Chunk, *Handle);
 							UE_LOG(LogPointForgeConvert, Log, TEXT("[pfconvert] %s"), *Chunk.TrimStartAndEnd());
 						}
@@ -247,6 +273,13 @@ FPFConvertHandlePtr FPFConvert::ConvertAsync(const FString& SourceFile, const FS
 					const FString Tail = FPlatformProcess::ReadPipe(PipeRead);
 					if (!Tail.IsEmpty())
 					{
+						TArray<FString> TailLines;
+						Tail.ParseIntoArrayLines(TailLines, false);
+						for (const FString& TL : TailLines)
+						{
+							const FString Trimmed = TL.TrimStartAndEnd();
+							if (!Trimmed.IsEmpty()) Handle->AppendLog(Trimmed);
+						}
 						ParseConvertStatus(Tail, *Handle);
 						UE_LOG(LogPointForgeConvert, Log, TEXT("[pfconvert] %s"), *Tail.TrimStartAndEnd());
 					}
@@ -281,7 +314,8 @@ FPFConvertHandlePtr FPFConvert::ConvertAsync(const FString& SourceFile, const FS
 
 		// Final state.
 		if (bCancelled)        { Handle->State.store(EPFConvertState::Cancelled); }
-		else if (bOk)          { Handle->State.store(EPFConvertState::Done);
+		else if (bOk)          { Handle->Progress.store(1.f);
+		                          Handle->State.store(EPFConvertState::Done);
 		                          Handle->SetStatus(TEXT("Done")); }
 		else                   { Handle->State.store(EPFConvertState::Failed);
 		                          if (Handle->GetStatus().IsEmpty()) { Handle->SetStatus(TEXT("Failed")); } }

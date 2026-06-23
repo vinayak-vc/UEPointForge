@@ -1,7 +1,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Logging/LogMacros.h"
 #include "PFOctreeFormat.h"
+
+DECLARE_LOG_CATEGORY_EXTERN(LogPointForge, Log, All);
 #include "DynamicMeshBuilder.h"      // FDynamicMeshVertex
 #include "HAL/Runnable.h"
 #include "HAL/ThreadSafeBool.h"
