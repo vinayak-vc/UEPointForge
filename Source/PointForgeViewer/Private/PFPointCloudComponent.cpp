@@ -86,6 +86,9 @@ void UPFPointCloudComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 	// Drive the billboard material params (game-thread MID setters).
 	if (PointMID)
 	{
+		// PointSize is in screen pixels. The material WPO already converts to world units
+		// using Distance(CameraPositionWS, WorldPosition) / FovFactor internally
+		// (View→World transform chain). Pass the pixel value directly.
 		PointMID->SetScalarParameterValue(TEXT("PointSize"), PointSize);
 		PointMID->SetScalarParameterValue(TEXT("Round"), bRoundPoints ? 1.f : 0.f);
 		PointMID->SetScalarParameterValue(TEXT("Attenuate"), bAttenuate ? 1.f : 0.f);

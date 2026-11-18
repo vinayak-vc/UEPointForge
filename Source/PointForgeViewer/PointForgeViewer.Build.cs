@@ -23,6 +23,11 @@ public class PointForgeViewer : ModuleRules
 		// Inherit UE 5.5's default C++ standard (C++20). Do NOT force Cpp17 — the
 		// engine headers (SceneView.h, InstanceDataTypes.h) use C++20 features.
 
+		// C API headers for PointForgeNative.dll (PointForgeSplatC.h includes
+		// ../unity/PointForgeC.h, so both folders are needed on the include path).
+		PublicIncludePaths.Add(Path.Combine(PointForgeRoot, "src", "library", "native"));
+		PublicIncludePaths.Add(Path.Combine(PointForgeRoot, "src", "library", "unity"));
+
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
@@ -128,6 +133,9 @@ public class PointForgeViewer : ModuleRules
 			{ "laszip3.dll",      new[] { PfReleaseDir, ThirdPartyDir } },
 			{ "zstd.dll",         new[] { VcpkgBinDir,  PfReleaseDir, ThirdPartyDir } },
 			{ "E57Format.dll",    new[] { PfReleaseDir, ThirdPartyDir } },
+			// Native DLL for the Unreal splat + octree API (built by the PointForge
+			// CMake target PointForgeNative, static triplet = self-contained).
+			{ "PointForgeNative.dll", new[] { Path.Combine(PointForgeRoot, "build-static", "Release"), PfReleaseDir, ThirdPartyDir } },
 			{ "xerces-c_3_3.dll", new[] { PfReleaseDir, ThirdPartyDir } },
 		};
 

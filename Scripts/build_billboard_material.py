@@ -148,7 +148,7 @@ connect(mulR, "", baseOff, "A"); connect(mulU, "", baseOff, "B")
 
 # Size.
 # Size based on projected Depth instead of radial distance.
-camFwdVS = const3(unreal.LinearColor(1, 0, 0, 0), COL["split"], 180)
+camFwdVS = const3(unreal.LinearColor(0, 0, 1, 0), COL["split"], 180)
 camFwdWS = E(unreal.MaterialExpressionTransform, COL["basis"], 180)
 camFwdWS.set_editor_property("transform_source_type", unreal.MaterialVectorCoordTransformSource.TRANSFORMSOURCE_VIEW)
 camFwdWS.set_editor_property("transform_type", unreal.MaterialVectorCoordTransform.TRANSFORM_WORLD)
