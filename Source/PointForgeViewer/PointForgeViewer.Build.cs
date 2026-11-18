@@ -1,6 +1,7 @@
 // Copyright. PointForge Viewer module build rules.
 using System;
 using System.IO;
+using System.Linq;
 using UnrealBuildTool;
 
 public class PointForgeViewer : ModuleRules
@@ -15,7 +16,17 @@ public class PointForgeViewer : ModuleRules
 	private readonly bool bLinkPfcoreInProcess = false;
 
 	// Root of the PointForge C++ repo. Adjust if you relocate it.
-	private static string PointForgeRoot => @"C:\UnrealProject\PointForge";
+	// OPTIONAL developer override: root of the PointForge C++ repo. Only used by the
+	// in-process pfcore option (bLinkPfcoreInProcess) and to pick up freshly built
+	// binaries. Leave POINTFORGE_ROOT unset and the plugin uses its own copies in
+	// ThirdParty/ (headers, zstd, PointForgeNative.dll), so it stays independent.
+	private static string PointForgeRoot => Environment.GetEnvironmentVariable("POINTFORGE_ROOT") ?? "";
+
+	// Returns a path under PointForgeRoot, or "" when the override is not set.
+	private static string FromPointForgeRoot(params string[] Parts)
+	{
+		return string.IsNullOrEmpty(PointForgeRoot) ? "" : Path.Combine(new[] { PointForgeRoot }.Concat(Parts).ToArray());
+	}
 
 	public PointForgeViewer(ReadOnlyTargetRules Target) : base(Target)
 	{
@@ -25,8 +36,10 @@ public class PointForgeViewer : ModuleRules
 
 		// C API headers for PointForgeNative.dll (PointForgeSplatC.h includes
 		// ../unity/PointForgeC.h, so both folders are needed on the include path).
-		PublicIncludePaths.Add(Path.Combine(PointForgeRoot, "src", "library", "native"));
-		PublicIncludePaths.Add(Path.Combine(PointForgeRoot, "src", "library", "unity"));
+		// Plugin-owned copies (ThirdParty/PointForgeNative/include). Re-copy from the
+		// PointForge repo src/library/{native,unity} when the C API changes.
+		string NativeInc = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "ThirdParty", "PointForgeNative", "include"));
+		PublicIncludePaths.Add(NativeInc);
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
@@ -48,22 +61,16 @@ public class PointForgeViewer : ModuleRules
 		}
 
 		
-		string VcpkgDir = Path.Combine(PointForgeRoot, "build", "vcpkg_installed", "x64-windows");
-		string ZstdInc = Path.Combine(VcpkgDir, "include");
-		string ZstdLib = Path.Combine(VcpkgDir, "lib", "zstd.lib");
-		
+		// zstd (static) for compressed octree nodes. Plugin-owned copy in ThirdParty/zstd.
+		string ZstdRoot = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "ThirdParty", "zstd"));
+		string ZstdInc = Path.Combine(ZstdRoot, "include");
+		string ZstdLib = Path.Combine(ZstdRoot, "lib", "zstd.lib");
+
 		if (Directory.Exists(ZstdInc) && File.Exists(ZstdLib))
 		{
 			PrivateIncludePaths.Add(ZstdInc);
 			PublicAdditionalLibraries.Add(ZstdLib);
 			PublicDefinitions.Add("WITH_ZSTD=1");
-			
-			string ZstdDll = Path.Combine(VcpkgDir, "bin", "zstd.dll");
-			if (File.Exists(ZstdDll))
-			{
-				RuntimeDependencies.Add("$(BinaryOutputDir)/zstd.dll", ZstdDll);
-				PublicDelayLoadDLLs.Add("zstd.dll");
-			}
 		}
 		else
 		{
@@ -122,20 +129,20 @@ public class PointForgeViewer : ModuleRules
 		// Destination uses the absolute ThirdParty path so pfconvert's DLL search
 		// (same directory as the exe) finds laszip3.dll / zstd.dll next to it.
 		string ThirdPartyDir = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "Binaries", "ThirdParty"));
-		string PfReleaseDir  = Path.Combine(PointForgeRoot, "build", "Release");
-		string VcpkgBinDir   = Path.Combine(PointForgeRoot, "build", "vcpkg_installed", "x64-windows", "bin");
+		string PluginThirdParty = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "ThirdParty"));
+		string PfReleaseDir  = FromPointForgeRoot("build", "Release");
 
 		// Ordered: pfconvert.exe first so the log is easy to read.
+		// Candidate dirs are searched in order; plugin-owned copies come first.
 		var BundledFiles = new System.Collections.Generic.Dictionary<string, string[]>
 		{
-			// filename → candidate source dirs (first existing file wins)
+			// filename -> candidate source dirs (first existing file wins)
 			{ "pfconvert.exe",    new[] { PfReleaseDir, ThirdPartyDir } },
 			{ "laszip3.dll",      new[] { PfReleaseDir, ThirdPartyDir } },
-			{ "zstd.dll",         new[] { VcpkgBinDir,  PfReleaseDir, ThirdPartyDir } },
+			{ "zstd.dll",         new[] { Path.Combine(PluginThirdParty, "zstd", "bin"), PfReleaseDir, ThirdPartyDir } },
 			{ "E57Format.dll",    new[] { PfReleaseDir, ThirdPartyDir } },
-			// Native DLL for the Unreal splat + octree API (built by the PointForge
-			// CMake target PointForgeNative, static triplet = self-contained).
-			{ "PointForgeNative.dll", new[] { Path.Combine(PointForgeRoot, "build-static", "Release"), PfReleaseDir, ThirdPartyDir } },
+			// Native DLL for the Unreal splat + octree API (PointForgeNative target).
+			{ "PointForgeNative.dll", new[] { Path.Combine(PluginThirdParty, "PointForgeNative", "bin"), ThirdPartyDir, FromPointForgeRoot("build-static", "Release") } },
 			{ "xerces-c_3_3.dll", new[] { PfReleaseDir, ThirdPartyDir } },
 		};
 
@@ -145,6 +152,7 @@ public class PointForgeViewer : ModuleRules
 			string SrcPath  = "";
 			foreach (string Dir in kvp.Value)
 			{
+				if (string.IsNullOrEmpty(Dir)) continue;   // PointForgeRoot not set
 				string Candidate = Path.Combine(Dir, FileName);
 				if (File.Exists(Candidate)) { SrcPath = Candidate; break; }
 			}

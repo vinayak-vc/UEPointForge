@@ -2,6 +2,7 @@
 
 #include "Async/Async.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
@@ -121,9 +122,18 @@ FString FPFConvert::LocatePfConvert(const FString& Override)
 		return BesideExe;
 	}
 
-	// Last-resort dev path — only present on the original dev machine.
-	const FString DevPath = TEXT("C:/UnrealProject/PointForge/build/Release/pfconvert.exe");
-	return FPaths::FileExists(DevPath) ? DevPath : FString();
+	// Developer override: POINTFORGE_ROOT points at a PointForge checkout whose
+	// build/Release holds a fresh pfconvert.exe. Unset = no repo dependency.
+	const FString Root = FPlatformMisc::GetEnvironmentVariable(TEXT("POINTFORGE_ROOT"));
+	if (!Root.IsEmpty())
+	{
+		const FString DevPath = FPaths::Combine(Root, TEXT("build/Release/pfconvert.exe"));
+		if (FPaths::FileExists(DevPath))
+		{
+			return DevPath;
+		}
+	}
+	return FString();
 }
 
 // Parse a chunk of pfconvert stdout and refine the handle's status text. Looks
