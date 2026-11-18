@@ -7,6 +7,7 @@
 #include "Materials/Material.h"          // UMaterial::GetDefaultMaterial
 #include "Materials/MaterialInterface.h"
 #include "SceneManagement.h"
+#include "SceneInterface.h"             // FSceneInterface (GetScene().GetFeatureLevel)
 #include "SceneView.h"
 #include "ConvexVolume.h"
 #include "PrimitiveUniformShaderParametersBuilder.h"

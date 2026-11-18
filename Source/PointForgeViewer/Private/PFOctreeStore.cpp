@@ -1,6 +1,7 @@
 #include "PFOctreeStore.h"
 
 #include "HAL/PlatformFileManager.h"
+#include "Async/MappedFileHandle.h"     // IMappedFileHandle / IMappedFileRegion
 #include "HAL/PlatformProcess.h"
 #include "HAL/RunnableThread.h"
 #include "HAL/Event.h"

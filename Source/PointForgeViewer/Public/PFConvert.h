@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/ObjectMacros.h"   // UENUM/UMETA (game target has no UnrealEd PCH)
 #include "HAL/CriticalSection.h"
 #include <atomic>
 

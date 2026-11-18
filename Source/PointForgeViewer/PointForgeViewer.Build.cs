@@ -69,8 +69,21 @@ public class PointForgeViewer : ModuleRules
 		if (Directory.Exists(ZstdInc) && File.Exists(ZstdLib))
 		{
 			PrivateIncludePaths.Add(ZstdInc);
-			PublicAdditionalLibraries.Add(ZstdLib);
+			PublicAdditionalLibraries.Add(ZstdLib);   // import lib for zstd.dll (1.5.7, /MD-safe)
 			PublicDefinitions.Add("WITH_ZSTD=1");
+
+			// zstd.dll is delay-loaded: FPointForgeViewerModule::StartupModule loads it
+			// from Binaries/Win64 before any ZSTD_* call, so stage it there.
+			string ZstdDll = Path.Combine(ZstdRoot, "bin", "zstd.dll");
+			if (File.Exists(ZstdDll))
+			{
+				PublicDelayLoadDLLs.Add("zstd.dll");
+				RuntimeDependencies.Add("$(BinaryOutputDir)/zstd.dll", ZstdDll);
+			}
+			else
+			{
+				Console.WriteLine("PointForgeViewer: zstd.dll not found at " + ZstdDll);
+			}
 		}
 		else
 		{
@@ -158,8 +171,18 @@ public class PointForgeViewer : ModuleRules
 			}
 			if (!string.IsNullOrEmpty(SrcPath))
 			{
-					// $(PluginDir) resolves correctly in both editor and packaged builds.
-				RuntimeDependencies.Add("$(PluginDir)/Binaries/ThirdParty/" + FileName, SrcPath);
+				// $(PluginDir) resolves correctly in both editor and packaged builds.
+				// A file already in Binaries/ThirdParty is staged in place: UBT rejects a
+				// copy whose source and target are the same file.
+				string DestPath = Path.Combine(ThirdPartyDir, FileName);
+				if (string.Equals(Path.GetFullPath(SrcPath), DestPath, StringComparison.OrdinalIgnoreCase))
+				{
+					RuntimeDependencies.Add("$(PluginDir)/Binaries/ThirdParty/" + FileName);
+				}
+				else
+				{
+					RuntimeDependencies.Add("$(PluginDir)/Binaries/ThirdParty/" + FileName, SrcPath);
+				}
 				Console.WriteLine("PointForgeViewer: bundling " + FileName + " from " + SrcPath);
 			}
 			else
