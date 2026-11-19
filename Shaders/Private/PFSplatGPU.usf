@@ -1,0 +1,249 @@
+// Copyright. PointForge Viewer — GPU Gaussian splat passes.
+//
+// ProjectCS    : per splat. View transform, frustum + screen-size cull, 2D
+//                covariance -> conic + pixel radius, quantised depth sort key.
+// BuildQuadsCS : per quad slot. Reads the sorted order (nearest first) and writes
+//                the nearest min(visible, slots) splats far-to-near as
+//                camera-facing quads into FLocalVertexFactory-layout buffers.
+//
+// Maths mirrors PointForgeNative's PF_Splat_Update (Jacobian clamp 1.3, +0.3 px
+// dilation, 3-sigma radius), expressed in Unreal view space:
+// x right, y up, z forward (left-handed), so pixel u = fx*x/z, v = fy*y/z.
+//
+// Material contract (M_PointForgeSplat evaluates the Gaussian at UV0 * UV2.y px):
+//   CPU path : UV0 = corner in [-1,1]^2, UV2.y = radius px
+//   GPU path : UV0 = pixel offset (tight per-axis quad), UV2.y = 1
+//   UV1 = conic (a, b), UV2.x = conic c, vertex colour = sRGB + opacity
+
+#include "/Engine/Public/Platform.ush"
+#include "/Engine/Private/ComputeShaderUtils.ush"
+
+#ifndef THREADGROUP_SIZE
+#define THREADGROUP_SIZE 64
+#endif
+
+#define PF_CULLED_KEY 0xFFFFu   // must match PFSplatDepthKeyMask (16-bit keys)
+
+// Mirrors PFSplatGpuRecord (56 bytes, tightly packed in a structured buffer).
+struct FSplatRec
+{
+	float3 Pos;      // centred position, metres
+	float  Radius;   // 3-sigma bounding radius, metres
+	float  S00, S01, S02, S11, S12, S22;   // 3D covariance, metres^2
+	float4 Color;    // sRGB rgb (0..1), opacity
+};
+
+StructuredBuffer<FSplatRec> Splats;
+
+// Extent of the visible footprint in sigmas: 3 for opaque splats, less for faint
+// ones (alpha = opacity * exp(-0.5 d^2) drops below 1/255 at d = sqrt(2 ln(255 opacity))).
+float OpacityExtent(float Opacity)
+{
+	return min(3.0f, sqrt(2.0f * log(max(255.0f * Opacity, 1.0001f))));
+}
+
+// ---- ProjectCS ------------------------------------------------------------------
+
+float4x4 LocalToView;
+float4x4 ViewToClip;
+float2 Focal;
+float2 ViewportSize;
+float2 JacobianLimit;
+float2 DepthKeyRange;
+uint   NumSplats;
+float  UnitScale;
+float  MaxAxisScale;
+float  MinPixelRadius;
+float  NearCull;
+uint   bOrtho;
+float  MaxRadiusPx;     // giant-splat cutoff (pixels)
+
+RWBuffer<uint>   OutKeys;
+RWBuffer<uint>   OutValues;
+RWBuffer<float4> OutConic;
+RWBuffer<float>  OutWorldRadius;
+RWBuffer<uint>   OutVisibleCount;
+
+groupshared uint GVisible;
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void ProjectCS(uint3 GroupId : SV_GroupID, uint GroupIndex : SV_GroupIndex)
+{
+	const uint i = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, THREADGROUP_SIZE);
+
+	if (GroupIndex == 0)
+	{
+		GVisible = 0;
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	bool bVisible = false;
+	if (i < NumSplats)
+	{
+		const FSplatRec S = Splats[i];
+		uint Key = PF_CULLED_KEY;
+
+		const float3 V = mul(float4(S.Pos * UnitScale, 1.0f), LocalToView).xyz;
+		const float WorldRad = S.Radius * UnitScale * MaxAxisScale;
+
+		// Splats that can never reach 1/255 alpha contribute nothing: skip them.
+		if (V.z > NearCull && S.Color.a >= (1.0f / 255.0f))
+		{
+			const float4 Clip = mul(float4(V, 1.0f), ViewToClip);
+			const float2 Ndc = Clip.xy / Clip.w;
+			const float PxRad = bOrtho ? WorldRad * Focal.y : WorldRad * Focal.y / V.z;
+			const float2 NdcRad = PxRad * 2.0f / ViewportSize;
+
+			if (all(abs(Ndc) <= 1.0f + NdcRad) && PxRad >= MinPixelRadius)
+			{
+				// Sigma in local units^2; W maps local -> view as column vectors.
+				const float U2 = UnitScale * UnitScale;
+				const float3x3 Sigma = U2 * float3x3(
+					S.S00, S.S01, S.S02,
+					S.S01, S.S11, S.S12,
+					S.S02, S.S12, S.S22);
+				const float3x3 W = transpose((float3x3)LocalToView);
+
+				float2x3 J;
+				if (bOrtho)
+				{
+					J = float2x3(Focal.x, 0.0f, 0.0f,
+					             0.0f, Focal.y, 0.0f);
+				}
+				else
+				{
+					const float IZ = 1.0f / V.z;
+					const float Tx = clamp(V.x * IZ, -JacobianLimit.x, JacobianLimit.x) * V.z;
+					const float Ty = clamp(V.y * IZ, -JacobianLimit.y, JacobianLimit.y) * V.z;
+					J = float2x3(Focal.x * IZ, 0.0f, -Focal.x * Tx * IZ * IZ,
+					             0.0f, Focal.y * IZ, -Focal.y * Ty * IZ * IZ);
+				}
+
+				const float2x3 T = mul(J, W);
+				const float2x2 Cov = mul(mul(T, Sigma), transpose(T));
+				const float A = Cov[0][0] + 0.3f;
+				const float B = Cov[0][1];
+				const float C = Cov[1][1] + 0.3f;
+				const float Det = A * C - B * B;
+
+				const float Mid = 0.5f * (A + C);
+				const float Lambda = sqrt(max(0.1f, Mid * Mid - Det));
+				// Visible extent: 3 sigma, shrunk for faint splats to where alpha
+				// falls below 1/255 (opacity * exp(-0.5 d2) = 1/255).
+				const float Extent = OpacityExtent(S.Color.a);
+				const float R = Extent * sqrt(max(Mid + Lambda, Mid - Lambda));
+				// Giant footprints (camera inside / against the splat) are dropped,
+				// not clamped: clamping cuts the Gaussian at the quad edge and shows
+				// as hard-edged rectangles. MaxRadiusPx is a fraction of the viewport.
+				if (Det > 0.0f && R <= MaxRadiusPx)
+				{
+					const float InvDet = 1.0f / Det;
+
+					// Inverse covariance: x^2 coefficient C/det, xy -B/det, y^2 A/det.
+					// w = the per-splat extent in sigmas (used again by BuildQuads).
+					OutConic[i] = float4(C * InvDet, -B * InvDet, A * InvDet, Extent);
+					// World units per pixel at this depth (quad corners are in pixels).
+					OutWorldRadius[i] = bOrtho ? 1.0f / Focal.y : V.z / Focal.y;
+
+					const float D = saturate((V.z - DepthKeyRange.x) * DepthKeyRange.y);
+					Key = (uint)(D * 65534.0f);   // 0..65534, nearest first
+					bVisible = true;
+				}
+			}
+		}
+
+		OutKeys[i] = Key;
+		OutValues[i] = i;
+	}
+
+	// One global atomic per group instead of one per splat.
+	if (bVisible)
+	{
+		InterlockedAdd(GVisible, 1u);
+	}
+	GroupMemoryBarrierWithGroupSync();
+	if (GroupIndex == 0 && GVisible > 0)
+	{
+		InterlockedAdd(OutVisibleCount[0], GVisible);
+	}
+}
+
+// ---- BuildQuadsCS -----------------------------------------------------------------
+
+float3 RightLocal;
+uint   NumQuadSlots;
+float3 UpLocal;
+
+Buffer<uint>   SortedValues;
+Buffer<float4> Conic;
+Buffer<float>  WorldRadius;
+Buffer<uint>   VisibleCount;
+
+RWBuffer<float>  OutPositions;   // 3 floats per vertex
+RWBuffer<float2> OutTexCoords;   // 3 float2 per vertex (UV0, UV1, UV2)
+RWBuffer<uint>   OutColors;      // packed FColor: A<<24 | R<<16 | G<<8 | B
+
+uint PackColor(float4 C)
+{
+	const uint4 Q = (uint4)round(saturate(C) * 255.0f);
+	return (Q.a << 24) | (Q.r << 16) | (Q.g << 8) | Q.b;
+}
+
+void WriteVertex(uint Vtx, float3 P, float2 Uv0, float2 Uv1, float2 Uv2, uint Col)
+{
+	OutPositions[Vtx * 3 + 0] = P.x;
+	OutPositions[Vtx * 3 + 1] = P.y;
+	OutPositions[Vtx * 3 + 2] = P.z;
+	OutTexCoords[Vtx * 3 + 0] = Uv0;
+	OutTexCoords[Vtx * 3 + 1] = Uv1;
+	OutTexCoords[Vtx * 3 + 2] = Uv2;
+	OutColors[Vtx] = Col;
+}
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void BuildQuadsCS(uint3 GroupId : SV_GroupID, uint GroupIndex : SV_GroupIndex)
+{
+	const uint j = GetUnWrappedDispatchThreadId(GroupId, GroupIndex, THREADGROUP_SIZE);
+	if (j >= NumQuadSlots)
+	{
+		return;
+	}
+
+	const float2 Corners[4] = { float2(-1, -1), float2(1, -1), float2(1, 1), float2(-1, 1) };
+	const uint Base = j * 4;
+
+	// Visible splats sort first (nearest first). Keep the nearest K and emit them
+	// far-to-near so "over" blending composites correctly in slot order.
+	const uint K = min(VisibleCount[0], NumQuadSlots);
+	if (j >= K)
+	{
+		// Unused slot: zero-area quad (rasteriser drops it), fully transparent.
+		[unroll] for (uint c = 0; c < 4; ++c)
+		{
+			WriteVertex(Base + c, float3(0, 0, 0), float2(0, 0), float2(0, 0), float2(0, 0), 0u);
+		}
+		return;
+	}
+
+	const uint Src = SortedValues[K - 1 - j];
+	const FSplatRec S = Splats[Src];
+	const float4 Cr = Conic[Src];          // conic a, b, c + extent in sigmas
+	const float WorldPerPx = WorldRadius[Src];
+	const float3 Centre = S.Pos * UnitScale;
+	const uint Col = PackColor(S.Color);
+
+	// Tight quad: half-extents of the ellipse's bounding box, per axis, instead
+	// of a square of the largest radius (thin splats cover far fewer pixels).
+	// Covariance from the conic: var_x = c / (a c - b^2), var_y = a / (a c - b^2).
+	const float InvDetC = 1.0f / max(Cr.x * Cr.z - Cr.y * Cr.y, 1.0e-20f);
+	const float2 HalfPx = max(Cr.w * sqrt(float2(Cr.z, Cr.x) * InvDetC), 1.0f);
+
+	[unroll] for (uint c = 0; c < 4; ++c)
+	{
+		const float2 Px = Corners[c] * HalfPx;   // corner offset in pixels
+		const float3 P = Centre + (RightLocal * Px.x + UpLocal * Px.y) * WorldPerPx;
+		// UV0 = pixel offset and UV2.y = 1, so the material's
+		// "UV0 * UV2.y" is the pixel offset it evaluates the Gaussian at.
+		WriteVertex(Base + c, P, Px, Cr.xy, float2(Cr.z, 1.0f), Col);
+	}
+}

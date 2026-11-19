@@ -20,6 +20,7 @@ typedef int32         (*PF_Splat_GetInfo_Fn)(PFSplatCloud* Cloud, PFSplatInfo* O
 typedef int32         (*PF_Splat_Update_Fn)(PFSplatCloud* Cloud, const PFSplatCamera* Cam,
                                             PFSplatInstance* Out, int32 Capacity);
 typedef int32         (*PF_Splat_LastVisibleCount_Fn)(PFSplatCloud* Cloud);
+typedef int64         (*PF_Splat_CopyGpuRecords_Fn)(PFSplatCloud* Cloud, PFSplatGpuRecord* Out, int64 Capacity);
 
 typedef uint32        (*PF_GetVersion_Fn)();
 
@@ -38,6 +39,8 @@ public:
 	PF_Splat_GetInfo_Fn            Splat_GetInfo = nullptr;
 	PF_Splat_Update_Fn             Splat_Update = nullptr;
 	PF_Splat_LastVisibleCount_Fn   Splat_LastVisibleCount = nullptr;
+	/** Optional (newer DLLs): raw splat records for the GPU path. Null => CPU path only. */
+	PF_Splat_CopyGpuRecords_Fn     Splat_CopyGpuRecords = nullptr;
 	PF_GetVersion_Fn               GetVersion = nullptr;
 
 	/** Singleton accessor (game thread only). */

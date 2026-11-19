@@ -48,6 +48,7 @@ public class PointForgeViewer : ModuleRules
 			"Engine",
 			"RHI",
 			"RenderCore",
+			"PointForgeViewerShaders", // GPU splat compute passes (PostConfigInit module)
 			"Projects", // IPluginManager (locate bundled pfconvert.exe)
 			"UMG",       // viewer panel (UUserWidget + controls)
 			"Slate",

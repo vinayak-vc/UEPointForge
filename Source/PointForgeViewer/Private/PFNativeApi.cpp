@@ -60,6 +60,8 @@ bool FPFNativeApi::Load(const FString& DllPath)
 	Splat_Update           = ResolveExport<PF_Splat_Update_Fn>(DllHandle, TEXT("PF_Splat_Update"));
 	Splat_LastVisibleCount = ResolveExport<PF_Splat_LastVisibleCount_Fn>(DllHandle, TEXT("PF_Splat_LastVisibleCount"));
 	GetVersion             = ResolveExport<PF_GetVersion_Fn>(DllHandle, TEXT("PF_GetVersion"));
+	// Optional: absent in older DLLs (the GPU splat path then stays off).
+	Splat_CopyGpuRecords   = ResolveExport<PF_Splat_CopyGpuRecords_Fn>(DllHandle, TEXT("PF_Splat_CopyGpuRecords"));
 
 	const bool bAllResolved = Splat_Open && Splat_Close && Splat_GetInfo && Splat_Update
 		&& Splat_LastVisibleCount && GetVersion;
@@ -85,5 +87,6 @@ void FPFNativeApi::Unload()
 	Splat_GetInfo = nullptr;
 	Splat_Update = nullptr;
 	Splat_LastVisibleCount = nullptr;
+	Splat_CopyGpuRecords = nullptr;
 	GetVersion = nullptr;
 }

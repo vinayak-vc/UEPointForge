@@ -75,12 +75,29 @@ PF_API int32_t       PF_Splat_GetInfo(PFSplatCloud* cloud, PFSplatInfo* out);   
 
 // Culls, LOD-filters and orders the splats for this camera, then writes up to
 // min(capacity, cam->maxInstances if non-zero) instances to `out` in back-to-front
-// order. Returns the number written, or 0 on invalid input.
+// order. When more splats pass the culls than fit, the NEAREST ones are kept
+// (the farthest, smallest-on-screen ones are dropped). Returns the number
+// written, or 0 on invalid input.
 PF_API int32_t PF_Splat_Update(PFSplatCloud* cloud, const PFSplatCamera* cam,
                                PFSplatInstance* out, int32_t capacity);
 
 // Number of splats that passed culling in the most recent PF_Splat_Update.
 PF_API int32_t PF_Splat_LastVisibleCount(PFSplatCloud* cloud);
+
+// View-independent splat record for GPU renderers (56 bytes, 14 floats), in
+// load order, centred space (metres). Upload once; project/sort on the GPU.
+//   sigma = 3D covariance (s00 s01 s02 s11 s12 s22), metres^2
+typedef struct PFSplatGpuRecord {
+    float position[3];         // centred position (metres)
+    float radius;              // 3-sigma bounding radius (metres)
+    float sigma[6];            // 3D covariance, upper triangle
+    float color[4];            // r, g, b (sRGB 0..1), opacity (0..1)
+} PFSplatGpuRecord;
+
+// Copies up to `capacity` records into `out`. Returns the number copied
+// (min(capacity, count)), or 0 on invalid input. Thread-safe with respect to
+// PF_Splat_Update only if not called concurrently on the same handle.
+PF_API int64_t PF_Splat_CopyGpuRecords(PFSplatCloud* cloud, PFSplatGpuRecord* out, int64_t capacity);
 
 #ifdef __cplusplus
 } // extern "C"
