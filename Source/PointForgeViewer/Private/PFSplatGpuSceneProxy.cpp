@@ -29,10 +29,33 @@
 class FPFRawVertexBuffer final : public FVertexBuffer {};
 class FPFRawIndexBuffer final : public FIndexBuffer {};
 
+/** Quad vertex streams for one view (FLocalVertexFactory layout), rewritten by BuildQuads. */
+struct FPFSplatViewSlot
+{
+	explicit FPFSplatViewSlot(ERHIFeatureLevel::Type InFeatureLevel)
+		: VertexFactory(InFeatureLevel, "FPFSplatGpuView") {}
+
+	FPFRawVertexBuffer PosVB, UvVB, ColVB;
+	FShaderResourceViewRHIRef PosSRV, UvSRV, ColSRV;
+	FUnorderedAccessViewRHIRef PosUAV, UvUAV, ColUAV;
+	FLocalVertexFactory VertexFactory;
+
+	// Skip the compute when this view's camera and the transform did not change.
+	FMatrix LastLocalToView = FMatrix::Identity;
+	FMatrix LastProjection = FMatrix::Identity;
+	FIntPoint LastViewport = FIntPoint::ZeroValue;
+
+	void Release()
+	{
+		VertexFactory.ReleaseResource();
+		PosVB.ReleaseResource();
+		UvVB.ReleaseResource();
+		ColVB.ReleaseResource();
+	}
+};
+
 struct FPFSplatGpuResources
 {
-	explicit FPFSplatGpuResources(ERHIFeatureLevel::Type InFeatureLevel)
-		: VertexFactory(InFeatureLevel, "FPFSplatGpu") {}
 
 	// Splat records (static).
 	FBufferRHIRef SplatBuf;
@@ -48,21 +71,25 @@ struct FPFSplatGpuResources
 	FShaderResourceViewRHIRef ConicSRV, RadiusSRV, CountSRV;
 	FUnorderedAccessViewRHIRef ConicUAV, RadiusUAV, CountUAV;
 
-	// FLocalVertexFactory streams (same layout as FStaticMeshVertexBuffers with
-	// 3 full-precision UVs), written by the BuildQuads pass.
-	FPFRawVertexBuffer PosVB, TanVB, UvVB, ColVB;
-	FShaderResourceViewRHIRef PosSRV, TanSRV, UvSRV, ColSRV;
-	FUnorderedAccessViewRHIRef PosUAV, UvUAV, ColUAV;
+	// Static streams shared by every view slot: constant tangents, quad indices.
+	FPFRawVertexBuffer TanVB;
+	FShaderResourceViewRHIRef TanSRV;
 	FPFRawIndexBuffer IndexBuf;
-	FLocalVertexFactory VertexFactory;
+
+	// Per-view quad streams (slot 0 always exists once initialised).
+	TUniquePtr<FPFSplatViewSlot> Slots[PFSplatMaxViewSlots];
 
 	void Release()
 	{
-		VertexFactory.ReleaseResource();
-		PosVB.ReleaseResource();
+		for (TUniquePtr<FPFSplatViewSlot>& S : Slots)
+		{
+			if (S)
+			{
+				S->Release();
+				S.Reset();
+			}
+		}
 		TanVB.ReleaseResource();
-		UvVB.ReleaseResource();
-		ColVB.ReleaseResource();
 		IndexBuf.ReleaseResource();
 		// The remaining members are ref-counted RHI objects.
 	}
@@ -123,9 +150,22 @@ void FPFSplatGpuState::SetLocalToWorld(const FMatrix& InLocalToWorld)
 	LocalToWorld = InLocalToWorld;
 }
 
-const FLocalVertexFactory* FPFSplatGpuState::GetVertexFactory() const
+bool FPFSplatGpuState::IsSlotReady(int32 SlotIndex) const
 {
-	return Res ? &Res->VertexFactory : nullptr;
+	return SlotIndex >= 0 && SlotIndex < PFSplatMaxViewSlots && SlotReady[SlotIndex].load();
+}
+
+const FLocalVertexFactory* FPFSplatGpuState::GetVertexFactory(int32 SlotIndex) const
+{
+	if (!IsSlotReady(SlotIndex))
+	{
+		SlotIndex = 0;   // this view's slot is not built yet: draw the first view's quads
+	}
+	if (!IsSlotReady(SlotIndex) || !Res || !Res->Slots[SlotIndex])
+	{
+		return nullptr;
+	}
+	return &Res->Slots[SlotIndex]->VertexFactory;
 }
 
 const FIndexBuffer* FPFSplatGpuState::GetIndexBuffer() const
@@ -142,7 +182,7 @@ void FPFSplatGpuState::InitGpu(FRHICommandListImmediate& RHICmdList)
 		return;
 	}
 
-	TUniquePtr<FPFSplatGpuResources> R = MakeUnique<FPFSplatGpuResources>(FeatureLevel);
+	TUniquePtr<FPFSplatGpuResources> R = MakeUnique<FPFSplatGpuResources>();
 	const uint32 N = static_cast<uint32>(NumSplats);
 	const uint32 Q = static_cast<uint32>(NumQuads);
 	const uint32 V = Q * 4u;
@@ -181,17 +221,6 @@ void FPFSplatGpuState::InitGpu(FRHICommandListImmediate& RHICmdList)
 	R->CountSRV = RHICmdList.CreateShaderResourceView(R->CountBuf, 4, PF_R32_UINT);
 	R->CountUAV = RHICmdList.CreateUnorderedAccessView(R->CountBuf, PF_R32_UINT);
 
-	// ---- vertex streams written per view ----
-	R->PosVB.VertexBufferRHI = MakeBuf(TEXT("PFSplatPositions"), V * 12);
-	R->PosSRV = RHICmdList.CreateShaderResourceView(R->PosVB.VertexBufferRHI, 4, PF_R32_FLOAT);
-	R->PosUAV = RHICmdList.CreateUnorderedAccessView(R->PosVB.VertexBufferRHI, PF_R32_FLOAT);
-	R->UvVB.VertexBufferRHI = MakeBuf(TEXT("PFSplatTexCoords"), V * 24);
-	R->UvSRV = RHICmdList.CreateShaderResourceView(R->UvVB.VertexBufferRHI, 8, PF_G32R32F);
-	R->UvUAV = RHICmdList.CreateUnorderedAccessView(R->UvVB.VertexBufferRHI, PF_G32R32F);
-	R->ColVB.VertexBufferRHI = MakeBuf(TEXT("PFSplatColors"), V * 4);
-	R->ColSRV = RHICmdList.CreateShaderResourceView(R->ColVB.VertexBufferRHI, 4, PF_R8G8B8A8);
-	R->ColUAV = RHICmdList.CreateUnorderedAccessView(R->ColVB.VertexBufferRHI, PF_R32_UINT);
-
 	// ---- static streams: constant tangents, quad index pattern ----
 	{
 		TArray<FPackedNormal> Tangents;
@@ -221,8 +250,7 @@ void FPFSplatGpuState::InitGpu(FRHICommandListImmediate& RHICmdList)
 			MakeConstArrayView(Indices));
 	}
 
-	if (!R->SplatBuf || !R->PosVB.VertexBufferRHI || !R->UvVB.VertexBufferRHI || !R->ColVB.VertexBufferRHI
-		|| !R->TanVB.VertexBufferRHI || !R->IndexBuf.IndexBufferRHI)
+	if (!R->SplatBuf || !R->TanVB.VertexBufferRHI || !R->IndexBuf.IndexBufferRHI)
 	{
 		UE_LOG(LogTemp, Error, TEXT("PFSplatGpu: GPU buffer creation failed (%d splats)"), NumSplats);
 		bInitFailed = true;
@@ -230,43 +258,94 @@ void FPFSplatGpuState::InitGpu(FRHICommandListImmediate& RHICmdList)
 	}
 
 	// Wrappers: InitRHI is a no-op, InitResource just marks them initialised.
-	R->PosVB.InitResource(RHICmdList);
 	R->TanVB.InitResource(RHICmdList);
-	R->UvVB.InitResource(RHICmdList);
-	R->ColVB.InitResource(RHICmdList);
 	R->IndexBuf.InitResource(RHICmdList);
+
+	Res = MoveTemp(R);
+	if (!InitSlot(RHICmdList, 0))
+	{
+		Res->Release();
+		Res.Reset();
+		bInitFailed = true;
+		return;
+	}
+	Records.Reset();   // drop our reference; the component keeps its cached copy
+
+	UE_LOG(LogTemp, Log, TEXT("PFSplatGpu: uploaded %d splats, %d draw slots (%.1f MB GPU, +%.1f MB per extra view)"),
+		NumSplats, NumQuads,
+		(N * (sizeof(PFSplatGpuRecord) + 4 * 4 + 16 + 4) + V * (12 + 8 + 24 + 4) + Q * 24) / (1024.0 * 1024.0),
+		V * (12 + 24 + 4) / (1024.0 * 1024.0));
+}
+
+bool FPFSplatGpuState::InitSlot(FRHICommandListImmediate& RHICmdList, int32 SlotIndex)
+{
+	check(IsInRenderingThread());
+	check(Res && SlotIndex >= 0 && SlotIndex < PFSplatMaxViewSlots);
+	if (Res->Slots[SlotIndex])
+	{
+		return true;
+	}
+
+	const uint32 V = static_cast<uint32>(NumQuads) * 4u;
+	auto MakeBuf = [&RHICmdList](const TCHAR* Name, uint32 Bytes)
+	{
+		FRHIResourceCreateInfo CreateInfo(Name);
+		return RHICmdList.CreateVertexBuffer(Bytes,
+			EBufferUsageFlags::ShaderResource | EBufferUsageFlags::UnorderedAccess,
+			ERHIAccess::UAVCompute, CreateInfo);
+	};
+
+	TUniquePtr<FPFSplatViewSlot> S = MakeUnique<FPFSplatViewSlot>(FeatureLevel);
+	S->PosVB.VertexBufferRHI = MakeBuf(TEXT("PFSplatPositions"), V * 12);
+	S->UvVB.VertexBufferRHI = MakeBuf(TEXT("PFSplatTexCoords"), V * 24);
+	S->ColVB.VertexBufferRHI = MakeBuf(TEXT("PFSplatColors"), V * 4);
+	if (!S->PosVB.VertexBufferRHI || !S->UvVB.VertexBufferRHI || !S->ColVB.VertexBufferRHI)
+	{
+		UE_LOG(LogTemp, Error, TEXT("PFSplatGpu: vertex buffer creation failed for view slot %d"), SlotIndex);
+		return false;
+	}
+	S->PosSRV = RHICmdList.CreateShaderResourceView(S->PosVB.VertexBufferRHI, 4, PF_R32_FLOAT);
+	S->PosUAV = RHICmdList.CreateUnorderedAccessView(S->PosVB.VertexBufferRHI, PF_R32_FLOAT);
+	S->UvSRV = RHICmdList.CreateShaderResourceView(S->UvVB.VertexBufferRHI, 8, PF_G32R32F);
+	S->UvUAV = RHICmdList.CreateUnorderedAccessView(S->UvVB.VertexBufferRHI, PF_G32R32F);
+	S->ColSRV = RHICmdList.CreateShaderResourceView(S->ColVB.VertexBufferRHI, 4, PF_R8G8B8A8);
+	S->ColUAV = RHICmdList.CreateUnorderedAccessView(S->ColVB.VertexBufferRHI, PF_R32_UINT);
+
+	S->PosVB.InitResource(RHICmdList);
+	S->UvVB.InitResource(RHICmdList);
+	S->ColVB.InitResource(RHICmdList);
 
 	// ---- vertex factory: mirrors FStaticMeshVertexBuffers' bind functions ----
 	FLocalVertexFactory::FDataType Data;
-	Data.PositionComponent = FVertexStreamComponent(&R->PosVB, 0, 12, VET_Float3);
-	Data.PositionComponentSRV = R->PosSRV;
-	Data.TangentBasisComponents[0] = FVertexStreamComponent(&R->TanVB, 0, 8, VET_PackedNormal, EVertexStreamUsage::ManualFetch);
-	Data.TangentBasisComponents[1] = FVertexStreamComponent(&R->TanVB, 4, 8, VET_PackedNormal, EVertexStreamUsage::ManualFetch);
-	Data.TangentsSRV = R->TanSRV;
-	Data.TextureCoordinates.Add(FVertexStreamComponent(&R->UvVB, 0, 24, VET_Float4, EVertexStreamUsage::ManualFetch));   // UV0 + UV1
-	Data.TextureCoordinates.Add(FVertexStreamComponent(&R->UvVB, 16, 24, VET_Float2, EVertexStreamUsage::ManualFetch));  // UV2
-	Data.TextureCoordinatesSRV = R->UvSRV;
+	Data.PositionComponent = FVertexStreamComponent(&S->PosVB, 0, 12, VET_Float3);
+	Data.PositionComponentSRV = S->PosSRV;
+	Data.TangentBasisComponents[0] = FVertexStreamComponent(&Res->TanVB, 0, 8, VET_PackedNormal, EVertexStreamUsage::ManualFetch);
+	Data.TangentBasisComponents[1] = FVertexStreamComponent(&Res->TanVB, 4, 8, VET_PackedNormal, EVertexStreamUsage::ManualFetch);
+	Data.TangentsSRV = Res->TanSRV;
+	Data.TextureCoordinates.Add(FVertexStreamComponent(&S->UvVB, 0, 24, VET_Float4, EVertexStreamUsage::ManualFetch));   // UV0 + UV1
+	Data.TextureCoordinates.Add(FVertexStreamComponent(&S->UvVB, 16, 24, VET_Float2, EVertexStreamUsage::ManualFetch));  // UV2
+	Data.TextureCoordinatesSRV = S->UvSRV;
 	Data.NumTexCoords = 3;
 	Data.LightMapCoordinateIndex = 0;
-	Data.LightMapCoordinateComponent = FVertexStreamComponent(&R->UvVB, 0, 24, VET_Float2, EVertexStreamUsage::ManualFetch);
-	Data.ColorComponent = FVertexStreamComponent(&R->ColVB, 0, 4, VET_Color, EVertexStreamUsage::ManualFetch);
-	Data.ColorComponentsSRV = R->ColSRV;
+	Data.LightMapCoordinateComponent = FVertexStreamComponent(&S->UvVB, 0, 24, VET_Float2, EVertexStreamUsage::ManualFetch);
+	Data.ColorComponent = FVertexStreamComponent(&S->ColVB, 0, 4, VET_Color, EVertexStreamUsage::ManualFetch);
+	Data.ColorComponentsSRV = S->ColSRV;
 	Data.ColorIndexMask = ~0u;
-	R->VertexFactory.SetData(RHICmdList, Data);
-	R->VertexFactory.InitResource(RHICmdList);
+	S->VertexFactory.SetData(RHICmdList, Data);
+	S->VertexFactory.InitResource(RHICmdList);
 
-	Res = MoveTemp(R);
-	Records.Reset();   // drop our reference; the component keeps its cached copy
-
-	UE_LOG(LogTemp, Log, TEXT("PFSplatGpu: uploaded %d splats, %d draw slots (%.1f MB GPU)"),
-		NumSplats, NumQuads,
-		(N * (sizeof(PFSplatGpuRecord) + 4 * 4 + 16 + 4) + V * (12 + 8 + 24 + 4) + Q * 24) / (1024.0 * 1024.0));
+	Res->Slots[SlotIndex] = MoveTemp(S);
+	if (SlotIndex > 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("PFSplatGpu: added view slot %d (%.1f MB)"), SlotIndex, V * (12 + 24 + 4) / (1024.0 * 1024.0));
+	}
+	return true;
 }
 
-void FPFSplatGpuState::UpdateForView(FRHICommandListImmediate& RHICmdList, const FPFSplatViewInputs& View)
+void FPFSplatGpuState::UpdateForView(FRHICommandListImmediate& RHICmdList, const FPFSplatViewInputs& View, int32 SlotIndex)
 {
 	check(IsInRenderingThread());
-	if (bInitFailed)
+	if (bInitFailed || SlotIndex < 0 || SlotIndex >= PFSplatMaxViewSlots)
 	{
 		return;
 	}
@@ -278,6 +357,11 @@ void FPFSplatGpuState::UpdateForView(FRHICommandListImmediate& RHICmdList, const
 			return;
 		}
 	}
+	if (!InitSlot(RHICmdList, SlotIndex))
+	{
+		return;   // out of memory for this view: it keeps drawing slot 0
+	}
+	FPFSplatViewSlot& Slot = *Res->Slots[SlotIndex];
 
 	FMatrix L2W;
 	{
@@ -291,13 +375,14 @@ void FPFSplatGpuState::UpdateForView(FRHICommandListImmediate& RHICmdList, const
 	const FMatrix& Proj = View.ProjectionMatrix;
 	const FIntPoint Vp(FMath::Max(1, View.ViewportSize.X), FMath::Max(1, View.ViewportSize.Y));
 
-	if (bDrawable.load() && Vp == LastViewport && LocalToView.Equals(LastLocalToView, 0.0) && Proj.Equals(LastProjection, 0.0))
+	if (SlotReady[SlotIndex].load() && Vp == Slot.LastViewport
+		&& LocalToView.Equals(Slot.LastLocalToView, 0.0) && Proj.Equals(Slot.LastProjection, 0.0))
 	{
-		return;   // same camera and transform: the vertex buffers are still correct
+		return;   // same camera and transform: this view's vertex buffers are still correct
 	}
-	LastLocalToView = LocalToView;
-	LastProjection = Proj;
-	LastViewport = Vp;
+	Slot.LastLocalToView = LocalToView;
+	Slot.LastProjection = Proj;
+	Slot.LastViewport = Vp;
 
 	const bool bOrtho = Proj.M[3][3] >= 1.0;
 	const float MaxAxisScale = static_cast<float>(FMath::Max(L2W.GetMaximumAxisScale(), UE_SMALL_NUMBER));
@@ -373,9 +458,9 @@ void FPFSplatGpuState::UpdateForView(FRHICommandListImmediate& RHICmdList, const
 	// ---- 3. quads into the vertex buffers ----
 	RHICmdList.Transition({
 		FRHITransitionInfo(R.ValUAV[Sorted], ERHIAccess::Unknown, ERHIAccess::SRVCompute),
-		FRHITransitionInfo(R.PosUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
-		FRHITransitionInfo(R.UvUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
-		FRHITransitionInfo(R.ColUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute)
+		FRHITransitionInfo(Slot.PosUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+		FRHITransitionInfo(Slot.UvUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+		FRHITransitionInfo(Slot.ColUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute)
 	});
 
 	FPFSplatQuadArgs QA;
@@ -388,19 +473,19 @@ void FPFSplatGpuState::UpdateForView(FRHICommandListImmediate& RHICmdList, const
 	QA.Conic = R.ConicSRV;
 	QA.WorldRadius = R.RadiusSRV;
 	QA.VisibleCount = R.CountSRV;
-	QA.OutPositions = R.PosUAV;
-	QA.OutTexCoords = R.UvUAV;
-	QA.OutColors = R.ColUAV;
+	QA.OutPositions = Slot.PosUAV;
+	QA.OutTexCoords = Slot.UvUAV;
+	QA.OutColors = Slot.ColUAV;
 	PFSplatGpu_DispatchBuildQuads(RHICmdList, QA, FeatureLevel);
 
 	const ERHIAccess DrawAccess = ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask;
 	RHICmdList.Transition({
-		FRHITransitionInfo(R.PosUAV, ERHIAccess::UAVCompute, DrawAccess),
-		FRHITransitionInfo(R.UvUAV, ERHIAccess::UAVCompute, DrawAccess),
-		FRHITransitionInfo(R.ColUAV, ERHIAccess::UAVCompute, DrawAccess)
+		FRHITransitionInfo(Slot.PosUAV, ERHIAccess::UAVCompute, DrawAccess),
+		FRHITransitionInfo(Slot.UvUAV, ERHIAccess::UAVCompute, DrawAccess),
+		FRHITransitionInfo(Slot.ColUAV, ERHIAccess::UAVCompute, DrawAccess)
 	});
 
-	bDrawable.store(true);
+	SlotReady[SlotIndex].store(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -463,24 +548,40 @@ public:
 			return;
 		}
 
-		// One camera per family (stereo: both eyes draw the first eye's quads).
-		const FSceneView& View = *InViewFamily.Views[0];
-		FPFSplatViewInputs In;
-		In.TranslatedViewMatrix = View.ViewMatrices.GetTranslatedViewMatrix();
-		In.ProjectionMatrix = View.ViewMatrices.GetProjectionMatrix();
-		In.InvViewMatrix = View.ViewMatrices.GetInvViewMatrix();
-		In.PreViewTranslation = View.ViewMatrices.GetPreViewTranslation();
-		In.ViewportSize = View.UnconstrainedViewRect.Size();
+		// One update per view, each into its own slot: stereo eyes and nDisplay
+		// viewports are culled and sorted for their own camera. Views past the slot
+		// limit draw slot 0. Families render one after another (each with its own
+		// graph), so slot i always belongs to view i of the family being rendered.
+		TArray<FPFSplatViewInputs> Inputs;   // heap: RDG caps the size captured by a pass lambda
+		Inputs.Reserve(PFSplatMaxViewSlots);
+		const int32 NumViews = FMath::Min(InViewFamily.Views.Num(), PFSplatMaxViewSlots);
+		for (int32 i = 0; i < NumViews; ++i)
+		{
+			const FSceneView* View = InViewFamily.Views[i];
+			if (!View)
+			{
+				break;   // keep slot index == view index
+			}
+			FPFSplatViewInputs& In = Inputs.AddDefaulted_GetRef();
+			In.TranslatedViewMatrix = View->ViewMatrices.GetTranslatedViewMatrix();
+			In.ProjectionMatrix = View->ViewMatrices.GetProjectionMatrix();
+			In.InvViewMatrix = View->ViewMatrices.GetInvViewMatrix();
+			In.PreViewTranslation = View->ViewMatrices.GetPreViewTranslation();
+			In.ViewportSize = View->UnconstrainedViewRect.Size();
+		}
 
 		// Untracked raw-RHI work (the passes do their own transitions). Added first
 		// in the family's graph, so it executes before the translucency pass that
 		// reads the vertex buffers.
-		GraphBuilder.AddPass(RDG_EVENT_NAME("PFSplatGPU (%d clouds)", Active.Num()), ERDGPassFlags::None,
-			[Active = MoveTemp(Active), In](FRHICommandListImmediate& RHICmdList)
+		GraphBuilder.AddPass(RDG_EVENT_NAME("PFSplatGPU (%d clouds, %d views)", Active.Num(), Inputs.Num()), ERDGPassFlags::None,
+			[Active = MoveTemp(Active), Inputs = MoveTemp(Inputs)](FRHICommandListImmediate& RHICmdList)
 			{
 				for (const TSharedPtr<FPFSplatGpuState, ESPMode::ThreadSafe>& S : Active)
 				{
-					S->UpdateForView(RHICmdList, In);
+					for (int32 i = 0; i < Inputs.Num(); ++i)
+					{
+						S->UpdateForView(RHICmdList, Inputs[i], i);
+					}
 				}
 			});
 	}
@@ -587,9 +688,8 @@ void FPFSplatGpuSceneProxy::GetDynamicMeshElements(
 	{
 		return;   // first frame: the update pass has not filled the buffers yet
 	}
-	const FLocalVertexFactory* VF = State->GetVertexFactory();
 	const FIndexBuffer* IB = State->GetIndexBuffer();
-	if (!VF || !IB)
+	if (!IB)
 	{
 		return;
 	}
@@ -598,6 +698,13 @@ void FPFSplatGpuSceneProxy::GetDynamicMeshElements(
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 	{
 		if (!(VisibilityMap & (1u << ViewIndex)) || !Views[ViewIndex])
+		{
+			continue;
+		}
+
+		// Each view draws the quads built for its own camera (slot == view index).
+		const FLocalVertexFactory* VF = State->GetVertexFactory(ViewIndex < PFSplatMaxViewSlots ? ViewIndex : 0);
+		if (!VF)
 		{
 			continue;
 		}

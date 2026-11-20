@@ -16,6 +16,10 @@ class FRHICommandListImmediate;
 class FLocalVertexFactory;
 class FIndexBuffer;
 struct FPFSplatGpuResources;
+struct FPFSplatViewSlot;
+
+/** Views per family that get their own quad buffers (stereo eyes, nDisplay viewports). */
+static constexpr int32 PFSplatMaxViewSlots = 4;
 
 /** View data captured on the render thread for one compute update (copied by value). */
 struct FPFSplatViewInputs
@@ -32,6 +36,10 @@ struct FPFSplatViewInputs
  * projection scratch, and FLocalVertexFactory-layout vertex buffers that a
  * compute pass rewrites per view. Shared between the scene proxy (draws it) and
  * the view extension (updates it), so neither outlives the other's use.
+ *
+ * Each view of a family (left/right eye, nDisplay viewports) gets its own
+ * vertex buffers ("view slot"), culled and sorted for that view's camera. The
+ * projection and sort scratch is shared because views update one after another.
  *
  * Threading: everything except construction runs on the render thread. GPU
  * resources are created lazily inside the first update pass, and released on
@@ -51,19 +59,26 @@ public:
 	/** Render thread: the owning primitive moved. */
 	void SetLocalToWorld(const FMatrix& InLocalToWorld);
 
-	/** Render thread, inside an RDG pass: create GPU resources on first use, then project, sort, build quads. */
-	void UpdateForView(FRHICommandListImmediate& RHICmdList, const FPFSplatViewInputs& View);
+	/**
+	 * Render thread, inside an RDG pass: create GPU resources on first use, then
+	 * project, sort and build quads into the vertex buffers of view slot SlotIndex.
+	 */
+	void UpdateForView(FRHICommandListImmediate& RHICmdList, const FPFSplatViewInputs& View, int32 SlotIndex);
 
-	/** Render thread: true once a view update has filled the vertex buffers. */
-	bool IsDrawable() const { return bDrawable.load(); }
+	/** Any thread: true once slot 0 has been filled (something can be drawn). */
+	bool IsDrawable() const { return IsSlotReady(0); }
+	/** Any thread: true once SlotIndex has its buffers and was filled at least once. */
+	bool IsSlotReady(int32 SlotIndex) const;
 
-	const FLocalVertexFactory* GetVertexFactory() const;
+	/** Vertex factory of a ready slot (falls back to slot 0), or null. */
+	const FLocalVertexFactory* GetVertexFactory(int32 SlotIndex) const;
 	const FIndexBuffer* GetIndexBuffer() const;
 	int32 GetNumQuads() const { return NumQuads; }
 	const FSceneInterface* GetScene() const { return Scene; }
 
 private:
 	void InitGpu(FRHICommandListImmediate& RHICmdList);
+	bool InitSlot(FRHICommandListImmediate& RHICmdList, int32 SlotIndex);
 
 	const ERHIFeatureLevel::Type FeatureLevel;
 	FRecords Records;                          // shared with the component; dropped after upload
@@ -81,13 +96,11 @@ private:
 	FMatrix LocalToWorld = FMatrix::Identity;
 
 	TUniquePtr<FPFSplatGpuResources> Res;      // render thread
-	std::atomic<bool> bDrawable{ false };
 	bool bInitFailed = false;
 
-	// Skip the compute when nothing changed since the last update.
-	FMatrix LastLocalToView = FMatrix::Identity;
-	FMatrix LastProjection = FMatrix::Identity;
-	FIntPoint LastViewport = FIntPoint::ZeroValue;
+	// Per-view vertex buffers live in Res (created on the render thread, freed
+	// with Res). A slot's ready flag is set after its buffers exist and were filled.
+	std::atomic<bool> SlotReady[PFSplatMaxViewSlots] = {};
 };
 
 /**

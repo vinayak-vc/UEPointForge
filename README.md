@@ -111,6 +111,13 @@ Shaders: `Shaders/Private/PFSplatGPU.usf`, registered by the
 
 GPU memory is roughly 290 MB per million splats.
 
+**Stereo, split screen and nDisplay.** Every view in a view family gets its
+own quad buffers (up to 4), culled and sorted for that view's camera, so the
+left and right eyes never share one eye's culling. The first extra view
+allocates them (about 150 MB per extra view at 1M `MaxSplatInstances`); views
+beyond the fourth reuse the first view's quads. nDisplay renders its view
+families one after another, which the per-view update relies on.
+
 ## 4. Point clouds
 
 Place an `APFPointCloudActor` and call **`LoadPointCloudFile(path)`**:
